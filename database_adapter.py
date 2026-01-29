@@ -25,9 +25,36 @@ class DatabaseAdapter:
         """Get database connection based on environment"""
         if self.is_postgres:
             # Cloud PostgreSQL
-            conn = psycopg2.connect(self.db_url)
-            conn.autocommit = True
-            return conn
+            try:
+                # Add debug info for connection troubleshooting
+                if not self.db_url:
+                    raise ValueError("DATABASE_URL environment variable is not set")
+                
+                # Check if URL still contains placeholder
+                if '[YOUR-PASSWORD]' in self.db_url:
+                    raise ValueError("DATABASE_URL contains placeholder [YOUR-PASSWORD]. Please replace with actual password.")
+                
+                # Try to connect with additional error info
+                conn = psycopg2.connect(
+                    self.db_url,
+                    connect_timeout=10,
+                    sslmode='require'
+                )
+                conn.autocommit = True
+                return conn
+            except psycopg2.OperationalError as e:
+                # Provide more specific error information
+                error_msg = str(e)
+                if 'password authentication failed' in error_msg.lower():
+                    raise ValueError("Database password is incorrect. Please check your Supabase database password and update DATABASE_URL in Streamlit Secrets.")
+                elif 'connection timed out' in error_msg.lower():
+                    raise ValueError("Connection timed out. Please check your network connection and Supabase server status.")
+                elif 'could not connect' in error_msg.lower():
+                    raise ValueError(f"Could not connect to Supabase database. Please verify your DATABASE_URL. Error: {error_msg}")
+                else:
+                    raise ValueError(f"Database connection failed: {error_msg}")
+            except Exception as e:
+                raise ValueError(f"Unexpected database connection error: {str(e)}")
         else:
             # Local SQLite
             return sqlite3.connect('team_dashboard.db', check_same_thread=False)
