@@ -72,32 +72,7 @@ def get_database_connection():
         
         # Create tables if not exist (SQLite fallback)
         create_tables_sqlite(conn)
-            spatial_hours REAL DEFAULT 0.0,
-        spatial_batches TEXT,
-        textual_completed INTEGER DEFAULT 0,
-        textual_hours REAL DEFAULT 0.0,
-        textual_batches TEXT,
-        qa_completed INTEGER DEFAULT 0,
-        qa_hours REAL DEFAULT 0.0,
-        qa_batches TEXT,
-        qc_completed INTEGER DEFAULT 0,
-        qc_hours REAL DEFAULT 0.0,
-        qc_batches TEXT,
-        automation_completed REAL DEFAULT 0.0,
-        automation_hours REAL DEFAULT 0.0,
-        automation_batches TEXT,
-        other_completed INTEGER DEFAULT 0,
-        other_hours REAL DEFAULT 0.0,
-        other_batches TEXT,
-        overtime_hours REAL DEFAULT 0.0,
-        total_hours REAL DEFAULT 0.0,
-        note TEXT,
-        submitted_by TEXT,
-        submit_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-    ''')
-    
-    conn.execute('''
+        return conn
     CREATE TABLE IF NOT EXISTS app_settings (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         spatial_target INTEGER DEFAULT 0,
