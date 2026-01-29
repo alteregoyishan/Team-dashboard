@@ -8,6 +8,13 @@ import sqlite3
 import pandas as pd
 from typing import Optional
 
+# Try to import Streamlit for secrets access
+try:
+    import streamlit as st
+    STREAMLIT_AVAILABLE = True
+except Exception:
+    STREAMLIT_AVAILABLE = False
+
 # Try to import PostgreSQL driver
 try:
     import psycopg2
@@ -18,7 +25,10 @@ except ImportError:
 
 class DatabaseAdapter:
     def __init__(self):
-        self.db_url = os.getenv("DATABASE_URL")
+        if STREAMLIT_AVAILABLE and "DATABASE_URL" in st.secrets:
+            self.db_url = st.secrets["DATABASE_URL"]
+        else:
+            self.db_url = os.getenv("DATABASE_URL")
         self.is_postgres = bool(self.db_url and POSTGRES_AVAILABLE)
         
     def get_connection(self):
