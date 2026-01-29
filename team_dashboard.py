@@ -72,17 +72,7 @@ def get_database_connection():
         
         # Create tables if not exist (SQLite fallback)
         create_tables_sqlite(conn)
-        return conn
-
-def create_tables_sqlite(conn):
-    """Create SQLite tables for local development"""
-    conn.execute('''
-    CREATE TABLE IF NOT EXISTS task_submissions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        submission_date DATE NOT NULL,
-        user_names TEXT NOT NULL,
-        spatial_completed INTEGER DEFAULT 0,
-        spatial_hours REAL DEFAULT 0.0,
+            spatial_hours REAL DEFAULT 0.0,
         spatial_batches TEXT,
         textual_completed INTEGER DEFAULT 0,
         textual_hours REAL DEFAULT 0.0,
