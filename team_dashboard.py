@@ -73,6 +73,10 @@ def get_database_connection():
         # Create tables if not exist (SQLite fallback)
         create_tables_sqlite(conn)
         return conn
+
+def create_tables_sqlite(conn):
+    """Create SQLite tables if they don't exist"""
+    conn.execute('''
     CREATE TABLE IF NOT EXISTS app_settings (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         spatial_target INTEGER DEFAULT 0,
