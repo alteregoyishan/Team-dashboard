@@ -28,7 +28,7 @@ class DatabaseAdapter:
         if STREAMLIT_AVAILABLE and "DATABASE_URL" in st.secrets:
             self.db_url = st.secrets["DATABASE_URL"]
         else:
-            self.db_url = os.getenv("DATABASE_URL")
+            self.db_url = os.getenv("DATABASE_URL")                                 
         self.is_postgres = bool(self.db_url and POSTGRES_AVAILABLE)
         
     def get_connection(self):
@@ -152,6 +152,22 @@ class DatabaseAdapter:
                     name TEXT PRIMARY KEY,
                     team_function TEXT
                 )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS task_entries (
+                    id SERIAL PRIMARY KEY,
+                    submission_id INTEGER NOT NULL,
+                    submission_date DATE NOT NULL,
+                    user_name TEXT NOT NULL,
+                    task_type TEXT NOT NULL,
+                    batch TEXT NOT NULL,
+                    completed REAL DEFAULT 0,
+                    hours REAL DEFAULT 0.0,
+                    CONSTRAINT fk_submission
+                        FOREIGN KEY(submission_id)
+                        REFERENCES task_submissions(id)
+                        ON DELETE CASCADE
+                )
                 """
             ]
         else:
@@ -203,6 +219,19 @@ class DatabaseAdapter:
                 CREATE TABLE IF NOT EXISTS team_members (
                     name TEXT PRIMARY KEY,
                     team_function TEXT
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS task_entries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    submission_id INTEGER NOT NULL,
+                    submission_date DATE NOT NULL,
+                    user_name TEXT NOT NULL,
+                    task_type TEXT NOT NULL,
+                    batch TEXT NOT NULL,
+                    completed REAL DEFAULT 0,
+                    hours REAL DEFAULT 0.0,
+                    FOREIGN KEY(submission_id) REFERENCES task_submissions(id) ON DELETE CASCADE
                 )
                 """
             ]

@@ -84,6 +84,75 @@ def save_users_to_file(users):
     except Exception:
         return False
 
+def _normalize_task_rows(rows, allow_empty_batch: bool = False):
+    """Normalize task entry rows from data editor."""
+    normalized = []
+    for row in rows:
+        batch = str(row.get("batch", "")).strip()
+        completed = row.get("completed", 0)
+        hours = row.get("hours", 0.0)
+        try:
+            completed = float(completed)
+        except Exception:
+            completed = 0
+        try:
+            hours = float(hours)
+        except Exception:
+            hours = 0.0
+
+        if not batch and allow_empty_batch and completed > 0 and hours > 0:
+            batch = "N/A"
+
+        if batch and completed > 0 and hours > 0:
+            normalized.append({
+                "batch": batch,
+                "completed": completed,
+                "hours": hours
+            })
+    return normalized
+
+def _render_task_entries(task_label, batch_options, key_prefix, allow_empty_batch: bool = False, completed_max=None):
+    """Render task entry rows and return normalized rows, totals, batches."""
+    st.markdown(f"**{task_label} Tasks**")
+
+    default_rows = [{"batch": "", "completed": 0, "hours": 0.0}]
+    editor_key = f"{key_prefix}_entries"
+
+    column_config = {
+        "batch": st.column_config.SelectboxColumn(
+            "Batch",
+            options=batch_options,
+            required=not allow_empty_batch,
+        ),
+        "completed": st.column_config.NumberColumn(
+            "Completed",
+            min_value=0.0,
+            max_value=completed_max,
+            step=1.0,
+        ),
+        "hours": st.column_config.NumberColumn(
+            "Hours",
+            min_value=0.0,
+            step=0.1,
+            format="%.2f",
+        ),
+    }
+
+    edited = st.data_editor(
+        default_rows,
+        num_rows="dynamic",
+        key=editor_key,
+        column_config=column_config,
+        use_container_width=True,
+    )
+
+    rows = edited.to_dict(orient="records") if hasattr(edited, "to_dict") else edited
+    normalized = _normalize_task_rows(rows, allow_empty_batch=allow_empty_batch)
+    total_completed = sum(r["completed"] for r in normalized)
+    total_hours = sum(r["hours"] for r in normalized)
+    batches = [r["batch"] for r in normalized]
+    return normalized, total_completed, total_hours, batches
+
 def get_database_connection():
     """Get database connection with cloud compatibility"""
     if USE_CLOUD_DB:
@@ -117,6 +186,20 @@ def create_tables_sqlite(conn):
     CREATE TABLE IF NOT EXISTS team_members (
         name TEXT PRIMARY KEY,
         team_function TEXT
+    )
+    ''')
+
+    conn.execute('''
+    CREATE TABLE IF NOT EXISTS task_entries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        submission_id INTEGER NOT NULL,
+        submission_date DATE NOT NULL,
+        user_name TEXT NOT NULL,
+        task_type TEXT NOT NULL,
+        batch TEXT NOT NULL,
+        completed REAL DEFAULT 0,
+        hours REAL DEFAULT 0.0,
+        FOREIGN KEY(submission_id) REFERENCES task_submissions(id) ON DELETE CASCADE
     )
     ''')
     
@@ -340,15 +423,17 @@ def show_daily_task_entry():
         
         # Initialize variables with defaults
         spatial_completed = spatial_hours = 0
-        textual_completed = textual_hours = 0  
+        textual_completed = textual_hours = 0
         qa_completed = qa_hours = 0
         qc_completed = qc_hours = 0
         automation_completed = automation_hours = 0
         other_completed = other_hours = 0
         overtime_hours = 0.0
-        
+
         spatial_batches = textual_batches = qa_batches = []
         qc_batches = automation_batches = other_batches = []
+
+        task_entries = []
         
         # Show task details immediately when checkboxes are selected
         if any([spatial_selected, textual_selected, qa_selected, qc_selected, automation_selected, other_selected]):
@@ -357,77 +442,45 @@ def show_daily_task_entry():
             
             # Spatial Tasks
             if spatial_selected:
-                st.markdown("**Spatial Tasks**")
-                spatial_col1, spatial_col2, spatial_col3 = st.columns([1, 1, 2])
-                with spatial_col1:
-                    spatial_completed = st.number_input("Spatial Completed *", min_value=1, step=1, value=1, key="spatial_completed")
-                with spatial_col2:
-                    spatial_hours = st.number_input("Spatial Hours *", min_value=0.1, step=0.1, format="%.2f", value=0.1, key="spatial_hours")
-                with spatial_col3:
-                    spatial_batches = st.multiselect("Spatial Batches *", options=batch_options, default=[], key="spatial_batches")
+                rows, spatial_completed, spatial_hours, spatial_batches = _render_task_entries(
+                    "Spatial", batch_options, "spatial"
+                )
+                task_entries += [{"task_type": "Spatial", **r} for r in rows]
             
             # Textual Tasks
             if textual_selected:
-                st.markdown("**Textual Tasks**")
-                textual_col1, textual_col2, textual_col3 = st.columns([1, 1, 2])
-                with textual_col1:
-                    textual_completed = st.number_input("Textual Completed *", min_value=1, step=1, value=1, key="textual_completed")
-                with textual_col2:
-                    textual_hours = st.number_input("Textual Hours *", min_value=0.1, step=0.1, format="%.2f", value=0.1, key="textual_hours")
-                with textual_col3:
-                    textual_batches = st.multiselect("Textual Batches *", options=batch_options, default=[], key="textual_batches")
+                rows, textual_completed, textual_hours, textual_batches = _render_task_entries(
+                    "Textual", batch_options, "textual"
+                )
+                task_entries += [{"task_type": "Textual", **r} for r in rows]
             
             # QA Tasks
             if qa_selected:
-                st.markdown("**QA Tasks**")
-                qa_col1, qa_col2, qa_col3 = st.columns([1, 1, 2])
-                with qa_col1:
-                    qa_completed = st.number_input("QA Completed *", min_value=1, step=1, value=1, key="qa_completed")
-                with qa_col2:
-                    qa_hours = st.number_input("QA Hours *", min_value=0.1, step=0.1, format="%.2f", value=0.1, key="qa_hours")
-                with qa_col3:
-                    qa_batches = st.multiselect("QA Batches *", options=batch_options, default=[], key="qa_batches")
+                rows, qa_completed, qa_hours, qa_batches = _render_task_entries(
+                    "QA", batch_options, "qa"
+                )
+                task_entries += [{"task_type": "QA", **r} for r in rows]
             
             # QC Tasks
             if qc_selected:
-                st.markdown("**QC Tasks**")
-                qc_col1, qc_col2, qc_col3 = st.columns([1, 1, 2])
-                with qc_col1:
-                    qc_completed = st.number_input("QC Completed *", min_value=1, step=1, value=1, key="qc_completed")
-                with qc_col2:
-                    qc_hours = st.number_input("QC Hours *", min_value=0.1, step=0.1, format="%.2f", value=0.1, key="qc_hours")
-                with qc_col3:
-                    qc_batches = st.multiselect("QC Batches *", options=batch_options, default=[], key="qc_batches")
+                rows, qc_completed, qc_hours, qc_batches = _render_task_entries(
+                    "QC", batch_options, "qc"
+                )
+                task_entries += [{"task_type": "QC", **r} for r in rows]
             
             # Automation Tasks
             if automation_selected:
-                st.markdown("**Automation Tasks**")
-                automation_col1, automation_col2, automation_col3 = st.columns([1, 1, 2])
-                with automation_col1:
-                    automation_completed = st.number_input(
-                        "Automation Progress % *",
-                        min_value=0.0,
-                        max_value=100.0,
-                        step=1.0,
-                        value=1.0,
-                        format="%.1f",
-                        key="automation_completed"
-                    )
-                with automation_col2:
-                    automation_hours = st.number_input("Automation Hours *", min_value=0.1, step=0.1, format="%.2f", value=0.1, key="automation_hours")
-                with automation_col3:
-                    automation_batches = st.multiselect("Automation Batches *", options=batch_options, default=[], key="automation_batches")
+                rows, automation_completed, automation_hours, automation_batches = _render_task_entries(
+                    "Automation", batch_options, "automation", completed_max=100.0
+                )
+                task_entries += [{"task_type": "Automation", **r} for r in rows]
             
             # Other Tasks
             if other_selected:
-                st.markdown("**Other Tasks**")
-                other_col1, other_col2, other_col3 = st.columns([1, 1, 2])
-                with other_col1:
-                    other_completed = st.number_input("Other Completed *", min_value=1, step=1, value=1, key="other_completed")
-                with other_col2:
-                    other_hours = st.number_input("Other Hours *", min_value=0.1, step=0.1, format="%.2f", value=0.1, key="other_hours")
-                with other_col3:
-                    other_batches = st.multiselect("Other Batches (optional)", options=batch_options, default=[], key="other_batches")
+                rows, other_completed, other_hours, other_batches = _render_task_entries(
+                    "Other", batch_options, "other", allow_empty_batch=True
+                )
+                task_entries += [{"task_type": "Other", **r} for r in rows]
 
         # Now create form with only summary and submit
         settings = get_app_settings()
@@ -482,19 +535,22 @@ def show_daily_task_entry():
                 if not any(selected_tasks):
                     errors.append("Please select at least one task type")
                 
-                # Validate selected task types have required fields
-                if spatial_selected and (spatial_completed <= 0 or spatial_hours <= 0 or not spatial_batches):
-                    errors.append("Spatial task requires completed count > 0, hours > 0, and at least one batch")
-                if textual_selected and (textual_completed <= 0 or textual_hours <= 0 or not textual_batches):
-                    errors.append("Textual task requires completed count > 0, hours > 0, and at least one batch")
-                if qa_selected and (qa_completed <= 0 or qa_hours <= 0 or not qa_batches):
-                    errors.append("QA task requires completed count > 0, hours > 0, and at least one batch")
-                if qc_selected and (qc_completed <= 0 or qc_hours <= 0 or not qc_batches):
-                    errors.append("QC task requires completed count > 0, hours > 0, and at least one batch")
-                if automation_selected and (automation_completed <= 0 or automation_hours <= 0 or not automation_batches):
-                    errors.append("Automation task requires progress % > 0, hours > 0, and at least one batch")
-                if other_selected and (other_completed <= 0 or other_hours <= 0):
-                    errors.append("Other task requires completed count > 0 and hours > 0")
+                # Validate selected task types have required rows
+                def _has_entries(task_type):
+                    return any(e["task_type"] == task_type for e in task_entries)
+
+                if spatial_selected and not _has_entries("Spatial"):
+                    errors.append("Spatial task requires at least one valid row")
+                if textual_selected and not _has_entries("Textual"):
+                    errors.append("Textual task requires at least one valid row")
+                if qa_selected and not _has_entries("QA"):
+                    errors.append("QA task requires at least one valid row")
+                if qc_selected and not _has_entries("QC"):
+                    errors.append("QC task requires at least one valid row")
+                if automation_selected and not _has_entries("Automation"):
+                    errors.append("Automation task requires at least one valid row")
+                if other_selected and not _has_entries("Other"):
+                    errors.append("Other task requires at least one valid row")
 
                 if any(selected_tasks) and calculated_total < 7.5:
                     errors.append("Total hours must be at least 7.5")
@@ -530,7 +586,7 @@ def show_daily_task_entry():
                             'total_hours': calculated_total,
                             'note': note,
                             'submitted_by': user_name
-                        })
+                        }, task_entries)
                         
                         st.success("Task report submitted successfully!")
                         st.cache_data.clear()
@@ -541,6 +597,10 @@ def show_daily_task_entry():
     
     with col_preview:
         st.subheader("Today's Summary")
+        show_preview = st.toggle("Show Summary Charts", value=True)
+        if not show_preview:
+            st.info("Summary charts hidden for faster interaction")
+            return
         
         # Show today's submission statistics
         today_stats = get_today_submissions()
@@ -592,14 +652,14 @@ def show_daily_task_entry():
             st.progress(progress)
             st.write(f"{len(current_week_submissions)}/{weekly_goal} submissions this week")
 
-def save_task_submission(data):
+def save_task_submission(data, task_entries):
     """Save task submission data"""
     conn = get_database_connection()
     cursor = conn.cursor()
     placeholder = "%s" if db_adapter.is_postgres else "?"
     values_placeholder = ", ".join([placeholder] * 24)
     
-    cursor.execute(f'''
+    insert_sql = f'''
     INSERT INTO task_submissions 
     (submission_date, user_names, 
      spatial_completed, spatial_hours, spatial_batches,
@@ -610,7 +670,12 @@ def save_task_submission(data):
      other_completed, other_hours, other_batches,
     overtime_hours, total_hours, note, submitted_by)
     VALUES ({values_placeholder})
-    ''', (
+    '''
+
+    if db_adapter.is_postgres:
+        insert_sql += " RETURNING id"
+
+    cursor.execute(insert_sql, (
         data['submission_date'],
         data['user_names'],
         data['spatial_completed'],
@@ -636,7 +701,32 @@ def save_task_submission(data):
         data['note'],
         data['submitted_by']
     ))
-    
+
+    if db_adapter.is_postgres:
+        submission_id = cursor.fetchone()[0]
+    else:
+        submission_id = cursor.lastrowid
+
+    # Insert task entries (per batch)
+    entry_placeholder = "%s" if db_adapter.is_postgres else "?"
+    entry_values_placeholder = ", ".join([entry_placeholder] * 7)
+    entry_sql = f'''
+    INSERT INTO task_entries
+    (submission_id, submission_date, user_name, task_type, batch, completed, hours)
+    VALUES ({entry_values_placeholder})
+    '''
+
+    for entry in task_entries:
+        cursor.execute(entry_sql, (
+            submission_id,
+            data['submission_date'],
+            data['user_names'],
+            entry['task_type'],
+            entry['batch'],
+            entry['completed'],
+            entry['hours']
+        ))
+
     conn.commit()
     conn.close()
 
@@ -755,6 +845,24 @@ def get_submissions_in_range(start_date, end_date):
         conn.close()
     return df
 
+@st.cache_data(ttl=300)
+def get_task_entries_in_range(start_date, end_date):
+    """Get task entries within date range"""
+    conn = get_database_connection()
+    placeholder = "%s" if db_adapter.is_postgres else "?"
+    query = f'''
+    SELECT submission_date, user_name, task_type, batch, completed, hours
+    FROM task_entries
+    WHERE submission_date BETWEEN {placeholder} AND {placeholder}
+    '''
+    try:
+        df = pd.read_sql_query(query, conn, params=[start_date, end_date])
+    except Exception:
+        df = pd.DataFrame()
+    finally:
+        conn.close()
+    return df
+
 def show_trend_charts(df):
     """Show trend charts"""
     # Aggregate data by date
@@ -846,34 +954,16 @@ def show_team_performance(df):
 
 def show_batch_analysis(df):
     """Show batch analysis"""
-    # Parse batch data
-    batch_data = []
-    
-    task_types = ['spatial', 'textual', 'qa', 'qc', 'automation', 'other']
-    
-    for _, row in df.iterrows():
-        for task_type in task_types:
-            batch_col = f'{task_type}_batches'
-            completed_col = f'{task_type}_completed'
-            hours_col = f'{task_type}_hours'
-            
-            if row[batch_col]:
-                try:
-                    batches = json.loads(row[batch_col])
-                    for batch in batches:
-                        batch_data.append({
-                            'batch': batch,
-                            'task_type': task_type.capitalize(),
-                            'date': row['submission_date'],
-                            'user': row['user_names'],
-                            'completed': row[completed_col],
-                            'hours': row[hours_col]
-                        })
-                except (json.JSONDecodeError, TypeError):
-                    continue
-    
-    if batch_data:
-        batch_df = pd.DataFrame(batch_data)
+    if df.empty:
+        st.info("No data available for batch analysis")
+        return
+
+    start_date = pd.to_datetime(df['submission_date']).min().date()
+    end_date = pd.to_datetime(df['submission_date']).max().date()
+    batch_df = get_task_entries_in_range(start_date, end_date)
+
+    if not batch_df.empty:
+        batch_df['task_type'] = batch_df['task_type'].astype(str).str.strip().str.title()
         
         # Batch statistics
         batch_stats = batch_df.groupby('batch').agg({
