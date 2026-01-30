@@ -40,7 +40,7 @@ DEFAULT_BATCH_OPTIONS = [
 # Admin access code (set ADMIN_ACCESS_CODE env var to override)
 ADMIN_ACCESS_CODE = os.getenv("ADMIN_ACCESS_CODE", "PM_ADMIN")
 
-@st.cache_data(ttl=600)  # Cache for 10 minutes
+@st.cache_data(ttl=600)
 def load_users_from_file():
     """Load users from PM.xlsx or PM_users.txt file or default list"""
     try:
@@ -81,7 +81,6 @@ def save_users_to_file(users):
         with open('PM_users.txt', 'w', encoding='utf-8') as f:
             for user in users:
                 f.write(f"{user}\n")
-        st.cache_data.clear()
         return True
     except Exception:
         return False
@@ -119,10 +118,10 @@ def _render_task_entries(task_label, batch_options, key_prefix, allow_empty_batc
 
     default_rows = [{"batch": "", "completed": 0, "hours": 0.0}]
     editor_key = f"{key_prefix}_entries"
+    state_key = f"{key_prefix}_entries_state"
 
-    # Use session state to maintain editor state between reruns
-    if editor_key not in st.session_state:
-        st.session_state[editor_key] = default_rows.copy()
+    if state_key not in st.session_state:
+        st.session_state[state_key] = default_rows.copy()
 
     column_config = {
         "batch": st.column_config.SelectboxColumn(
@@ -145,20 +144,19 @@ def _render_task_entries(task_label, batch_options, key_prefix, allow_empty_batc
     }
 
     edited = st.data_editor(
-        st.session_state[editor_key],
+        st.session_state[state_key],
         num_rows="dynamic",
         key=editor_key,
         column_config=column_config,
         use_container_width=True,
     )
 
-    # Update session state
     if hasattr(edited, "to_dict"):
         rows = edited.to_dict(orient="records")
-        st.session_state[editor_key] = rows
+        st.session_state[state_key] = rows
     else:
         rows = edited
-    
+        st.session_state[state_key] = rows
     normalized = _normalize_task_rows(rows, allow_empty_batch=allow_empty_batch)
     total_completed = sum(r["completed"] for r in normalized)
     total_hours = sum(r["hours"] for r in normalized)
@@ -230,6 +228,7 @@ def create_tables_sqlite(conn):
         )
     
     conn.commit()
+@st.cache_data(ttl=600)
 def get_app_settings():
     """Load app settings"""
     conn = get_database_connection()
@@ -258,8 +257,9 @@ def update_app_settings(spatial_target: int, textual_target: int):
         )
     conn.commit()
     conn.close()
+    st.cache_data.clear()
 
-@st.cache_data(ttl=600)  # Cache for 10 minutes
+@st.cache_data(ttl=600)
 def load_team_mapping_file():
     """Load team mapping from PM team file (PM.xlsx or PM_team.*)"""
     if os.path.exists('PM.xlsx'):
@@ -322,7 +322,7 @@ def upsert_team_member(name: str, team_function: str):
     conn.commit()
     conn.close()
 
-@st.cache_data(ttl=600)  # Cache for 10 minutes
+@st.cache_data(ttl=600)
 def get_batch_options() -> List[str]:
     """Get batch options from DB"""
     conn = get_database_connection()
@@ -366,6 +366,7 @@ def main():
     if USE_CLOUD_DB:
         try:
             db_adapter.create_tables()
+            st.session_state.db_tables_ready = True
         except Exception as e:
             st.error(f"Database initialization error: {e}")
     
@@ -403,7 +404,7 @@ def show_daily_task_entry():
     batch_options = get_batch_options()
     current_users = load_users_from_file()
     settings = get_app_settings()
-    
+
     # Create two column layout
     col_form, col_preview = st.columns([2, 1])
     
@@ -454,14 +455,13 @@ def show_daily_task_entry():
 
         task_entries = []
         
-        # Show task details immediately when tasks are selected
+        # Show task details immediately when checkboxes are selected
         if any([spatial_selected, textual_selected, qa_selected, qc_selected, automation_selected, other_selected]):
             st.markdown("---")
             st.markdown("**Task Details**")
-            
-            # Create a container to organize task entries
+
             details_container = st.container()
-            
+
             with details_container:
                 # Spatial Tasks
                 if spatial_selected:
@@ -506,6 +506,7 @@ def show_daily_task_entry():
                     task_entries += [{"task_type": "Other", **r} for r in rows]
 
         # Now create form with only summary and submit
+
         with st.form("daily_task_form", clear_on_submit=False):
             # Calculate total hours
             base_total = (spatial_hours + textual_hours + qa_hours + 
@@ -618,18 +619,10 @@ def show_daily_task_entry():
     
     with col_preview:
         st.subheader("Today's Summary")
-        if "show_summary" not in st.session_state:
-            st.session_state.show_summary = False
-
-        if not st.session_state.show_summary:
-            if st.button("Load Summary", use_container_width=True):
-                st.session_state.show_summary = True
-                st.cache_data.clear()
-            st.info("Summary is hidden for faster interaction")
+        show_preview = st.toggle("Show Summary Charts", value=True)
+        if not show_preview:
+            st.info("Summary charts hidden for faster interaction")
             return
-        else:
-            if st.button("Refresh Summary", use_container_width=True):
-                st.cache_data.clear()
         
         # Show today's submission statistics
         today_stats = get_today_submissions()
@@ -685,10 +678,9 @@ def save_task_submission(data, task_entries):
     """Save task submission data"""
     conn = get_database_connection()
     cursor = conn.cursor()
-    if db_adapter.is_postgres:
-        if not st.session_state.get("db_tables_ready", False):
-            db_adapter.create_tables()
-            st.session_state.db_tables_ready = True
+    if db_adapter.is_postgres and not st.session_state.get("db_tables_ready", False):
+        db_adapter.create_tables()
+        st.session_state.db_tables_ready = True
     placeholder = "%s" if db_adapter.is_postgres else "?"
     values_placeholder = ", ".join([placeholder] * 24)
     
@@ -749,16 +741,33 @@ def save_task_submission(data, task_entries):
     VALUES ({entry_values_placeholder})
     '''
 
-    for entry in task_entries:
-        cursor.execute(entry_sql, (
-            submission_id,
-            data['submission_date'],
-            data['user_names'],
-            entry['task_type'],
-            entry['batch'],
-            entry['completed'],
-            entry['hours']
-        ))
+    try:
+        for entry in task_entries:
+            cursor.execute(entry_sql, (
+                submission_id,
+                data['submission_date'],
+                data['user_names'],
+                entry['task_type'],
+                entry['batch'],
+                entry['completed'],
+                entry['hours']
+            ))
+    except Exception as e:
+        if db_adapter.is_postgres and "task_entries" in str(e):
+            db_adapter.create_tables()
+            st.session_state.db_tables_ready = True
+            for entry in task_entries:
+                cursor.execute(entry_sql, (
+                    submission_id,
+                    data['submission_date'],
+                    data['user_names'],
+                    entry['task_type'],
+                    entry['batch'],
+                    entry['completed'],
+                    entry['hours']
+                ))
+        else:
+            raise
 
     conn.commit()
     conn.close()
