@@ -915,9 +915,9 @@ def show_data_management():
     st.header("Data Management")
 
     if st.session_state.get("is_admin", False):
-        tab1, tab2, tab3, tab4, tab5 = st.tabs(["View All Data", "Edit Records", "Export Data", "Data Cleanup", "Team Performance"])
+        tab1, tab2, tab3, tab4 = st.tabs(["View All Data", "Edit Records", "Export Data", "Data Cleanup"])
     else:
-        tab1, tab5 = st.tabs(["View All Data", "Team Performance"])
+        tab1 = st.tabs(["View All Data"])[0]
         st.info("Admin access is required for Edit Records, Export Data, and Data Cleanup.")
 
     with tab1:
@@ -990,6 +990,7 @@ def show_data_management():
             
             if st.button("Export Data"):
                 df = get_submissions_in_range(export_start_date, export_end_date)
+                df = _prepare_export_df(df)
                 
                 if export_format == "Excel":
                     output = create_excel_export(df)
@@ -1042,30 +1043,8 @@ def show_data_management():
                         st.session_state.confirm_reset = True
                         st.warning("Click again to confirm reset")
 
-        with tab5:
-            st.subheader("Team Performance")
-            team_df = get_team_members()
-            if team_df.empty:
-                st.info("Upload PM_team.csv or PM_team.xlsx with columns: name, team_function")
-            else:
-                submissions = get_all_submissions()
-                if submissions.empty:
-                    st.info("No submissions available yet")
-                else:
-                    submissions['user_names'] = submissions['user_names'].astype(str).str.strip()
-                    merged = submissions.merge(team_df, left_on='user_names', right_on='name', how='left')
-                    merged['total_tasks'] = (
-                        merged['spatial_completed'] + merged['textual_completed'] +
-                        merged['qa_completed'] + merged['qc_completed'] + merged['other_completed']
-                    )
-                    team_perf = merged.groupby('team_function').agg({
-                        'total_hours': 'sum',
-                        'total_tasks': 'sum',
-                        'automation_completed': 'mean'
-                    }).rename(columns={'automation_completed': 'avg_automation_progress_%'}).round(2)
 
-                    st.dataframe(team_perf, use_container_width=True)
-
+@st.cache_data(ttl=120)
 def get_all_submissions():
     """Get all submission data"""
     conn = get_database_connection()
@@ -1082,10 +1061,16 @@ def update_record(record_id, new_date, new_note):
     """Update record"""
     conn = get_database_connection()
     cursor = conn.cursor()
-    cursor.execute(
-        "UPDATE task_submissions SET submission_date = ?, note = ? WHERE id = ?",
-        (new_date, new_note, record_id)
-    )
+    if db_adapter.is_postgres:
+        cursor.execute(
+            "UPDATE task_submissions SET submission_date = %s, note = %s WHERE id = %s",
+            (new_date, new_note, record_id)
+        )
+    else:
+        cursor.execute(
+            "UPDATE task_submissions SET submission_date = ?, note = ? WHERE id = ?",
+            (new_date, new_note, record_id)
+        )
     conn.commit()
     conn.close()
 
@@ -1094,10 +1079,16 @@ def delete_old_records(days):
     conn = get_database_connection()
     cursor = conn.cursor()
     cutoff_date = date.today() - pd.Timedelta(days=days)
-    cursor.execute(
-        "DELETE FROM task_submissions WHERE submission_date < ?",
-        (cutoff_date,)
-    )
+    if db_adapter.is_postgres:
+        cursor.execute(
+            "DELETE FROM task_submissions WHERE submission_date < %s",
+            (cutoff_date,)
+        )
+    else:
+        cursor.execute(
+            "DELETE FROM task_submissions WHERE submission_date < ?",
+            (cutoff_date,)
+        )
     conn.commit()
     conn.close()
 
@@ -1109,22 +1100,51 @@ def reset_all_data():
     conn.commit()
     conn.close()
 
+def _format_batch_list(value):
+    """Format batch list values for export display"""
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return ", ".join([str(v) for v in value])
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, list):
+                return ", ".join([str(v) for v in parsed])
+        except Exception:
+            return value
+        return value
+    return str(value)
+
+def _prepare_export_df(df):
+    """Prepare dataframe for export (normalize batch list columns)."""
+    export_df = df.copy()
+    batch_cols = [
+        'spatial_batches', 'textual_batches', 'qa_batches',
+        'qc_batches', 'automation_batches', 'other_batches'
+    ]
+    for col in batch_cols:
+        if col in export_df.columns:
+            export_df[col] = export_df[col].apply(_format_batch_list)
+    return export_df
+
 def create_excel_export(df):
     """Create Excel export file"""
+    export_df = _prepare_export_df(df)
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, sheet_name='Task Submissions', index=False)
+        export_df.to_excel(writer, sheet_name='Task Submissions', index=False)
         
         # Add summary sheet
-        if not df.empty:
+        if not export_df.empty:
             summary_data = {
-                'Total Submissions': [len(df)],
-                'Total Tasks': [(df['spatial_completed'] + df['textual_completed'] + 
-                               df['qa_completed'] + df['qc_completed'] + 
-                               df['automation_completed'] + df['other_completed']).sum()],
-                'Total Hours': [df['total_hours'].sum()],
-                'Date Range': [f"{df['submission_date'].min()} to {df['submission_date'].max()}"],
-                'Unique Users': [df['user_names'].nunique()]
+                'Total Submissions': [len(export_df)],
+                'Total Tasks': [(export_df['spatial_completed'] + export_df['textual_completed'] + 
+                               export_df['qa_completed'] + export_df['qc_completed'] + 
+                               export_df['automation_completed'] + export_df['other_completed']).sum()],
+                'Total Hours': [export_df['total_hours'].sum()],
+                'Date Range': [f"{export_df['submission_date'].min()} to {export_df['submission_date'].max()}"],
+                'Unique Users': [export_df['user_names'].nunique()]
             }
             summary_df = pd.DataFrame(summary_data)
             summary_df.to_excel(writer, sheet_name='Summary', index=False)
