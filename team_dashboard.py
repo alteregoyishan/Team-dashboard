@@ -1095,7 +1095,7 @@ def show_data_management():
                         entries_df = entries_df[entries_df['user_name'] == user_filter]
 
                 if not entries_df.empty:
-                    entries_df = entries_df.sort_values(['submission_date', 'user_name', 'task_type', 'batch'])
+                    entries_df = _prepare_entries_df(entries_df)
                     st.dataframe(entries_df, use_container_width=True, height=350)
                 else:
                     st.info("No batch details match the current filters")
@@ -1291,6 +1291,24 @@ def _prepare_export_df(df):
             export_df[col] = export_df[col].apply(_format_batch_list)
     return export_df
 
+def _prepare_entries_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Prepare task entries for display/export (grouped per batch)."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    required_cols = {'submission_date', 'user_name', 'task_type', 'batch', 'completed', 'hours'}
+    if not required_cols.issubset(df.columns):
+        return df.copy()
+
+    grouped = (
+        df[list(required_cols)]
+        .groupby(['submission_date', 'user_name', 'task_type', 'batch'], as_index=False)
+        .agg({'completed': 'sum', 'hours': 'sum'})
+    )
+
+    grouped['task_type'] = grouped['task_type'].astype(str).str.strip().str.title()
+    return grouped.sort_values(['submission_date', 'user_name', 'task_type', 'batch'])
+
 def create_excel_export(df):
     """Create Excel export file"""
     export_df = _prepare_export_df(df)
@@ -1316,7 +1334,7 @@ def create_excel_export(df):
 
 def create_excel_entries_export(df):
     """Create Excel export for task entries (per batch)."""
-    export_df = df.copy()
+    export_df = _prepare_entries_df(df)
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         export_df.to_excel(writer, sheet_name='Task Entries', index=False)
