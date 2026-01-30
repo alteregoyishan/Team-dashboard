@@ -151,10 +151,16 @@ def update_app_settings(spatial_target: int, textual_target: int):
     """Update app settings"""
     conn = get_database_connection()
     cursor = conn.cursor()
-    cursor.execute(
-        "UPDATE app_settings SET spatial_target = ?, textual_target = ? WHERE id = 1",
-        (spatial_target, textual_target)
-    )
+    if db_adapter.is_postgres:
+        cursor.execute(
+            "UPDATE app_settings SET spatial_target = %s, textual_target = %s WHERE id = 1",
+            (spatial_target, textual_target)
+        )
+    else:
+        cursor.execute(
+            "UPDATE app_settings SET spatial_target = ?, textual_target = ? WHERE id = 1",
+            (spatial_target, textual_target)
+        )
     conn.commit()
     conn.close()
 
@@ -235,7 +241,13 @@ def add_batch_option(name: str):
     """Add a batch option"""
     conn = get_database_connection()
     cursor = conn.cursor()
-    cursor.execute("INSERT OR IGNORE INTO batch_options (name) VALUES (?)", (name,))
+    if db_adapter.is_postgres:
+        cursor.execute(
+            "INSERT INTO batch_options (name) VALUES (%s) ON CONFLICT (name) DO NOTHING",
+            (name,)
+        )
+    else:
+        cursor.execute("INSERT OR IGNORE INTO batch_options (name) VALUES (?)", (name,))
     conn.commit()
     conn.close()
 
@@ -243,7 +255,10 @@ def delete_batch_option(name: str):
     """Delete a batch option"""
     conn = get_database_connection()
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM batch_options WHERE name = ?", (name,))
+    if db_adapter.is_postgres:
+        cursor.execute("DELETE FROM batch_options WHERE name = %s", (name,))
+    else:
+        cursor.execute("DELETE FROM batch_options WHERE name = ?", (name,))
     conn.commit()
     conn.close()
 
@@ -489,8 +504,8 @@ def show_daily_task_entry():
                 if other_selected and (other_completed <= 0 or other_hours <= 0):
                     errors.append("Other task requires completed count > 0 and hours > 0")
 
-                if any(selected_tasks) and calculated_total <= 7.5:
-                    errors.append("Total hours must be greater than 7.5")
+                if any(selected_tasks) and calculated_total < 7.5:
+                    errors.append("Total hours must be at least 7.5")
                 
                 if errors:
                     for error in errors:
@@ -584,8 +599,10 @@ def save_task_submission(data):
     """Save task submission data"""
     conn = get_database_connection()
     cursor = conn.cursor()
+    placeholder = "%s" if db_adapter.is_postgres else "?"
+    values_placeholder = ", ".join([placeholder] * 24)
     
-    cursor.execute('''
+    cursor.execute(f'''
     INSERT INTO task_submissions 
     (submission_date, user_names, 
      spatial_completed, spatial_hours, spatial_batches,
@@ -595,7 +612,7 @@ def save_task_submission(data):
      automation_completed, automation_hours, automation_batches,
      other_completed, other_hours, other_batches,
     overtime_hours, total_hours, note, submitted_by)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES ({values_placeholder})
     ''', (
         data['submission_date'],
         data['user_names'],
@@ -630,9 +647,10 @@ def get_today_submissions():
     """Get today's submission data"""
     conn = get_database_connection()
     today = date.today()
-    query = '''
+    placeholder = "%s" if db_adapter.is_postgres else "?"
+    query = f'''
     SELECT * FROM task_submissions 
-    WHERE submission_date = ? 
+    WHERE submission_date = {placeholder} 
     ORDER BY submit_time DESC
     '''
     try:
@@ -650,9 +668,10 @@ def get_current_week_submissions():
     today = date.today()
     start_of_week = today - pd.Timedelta(days=today.weekday())
     
-    query = '''
+    placeholder = "%s" if db_adapter.is_postgres else "?"
+    query = f'''
     SELECT * FROM task_submissions 
-    WHERE submission_date >= ? 
+    WHERE submission_date >= {placeholder} 
     ORDER BY submit_time DESC
     '''
     try:
@@ -722,9 +741,10 @@ def show_performance_overview():
 def get_submissions_in_range(start_date, end_date):
     """Get submissions within date range"""
     conn = get_database_connection()
-    query = '''
+    placeholder = "%s" if db_adapter.is_postgres else "?"
+    query = f'''
     SELECT * FROM task_submissions 
-    WHERE submission_date BETWEEN ? AND ?
+    WHERE submission_date BETWEEN {placeholder} AND {placeholder}
     ORDER BY submission_date DESC
     '''
     try:
@@ -1450,8 +1470,14 @@ def show_configuration():
         st.markdown("---")
         st.markdown("**File Locations:**")
         st.write("- Application: team_dashboard.py")
-        st.write("- Database: team_dashboard.db")
-        st.write("- User List: PM_users.txt")
+        if db_adapter.is_postgres:
+            st.write("- Database: Supabase (cloud)")
+        else:
+            st.write("- Database: team_dashboard.db")
+        if os.path.exists('PM.xlsx'):
+            st.write("- User List: PM.xlsx")
+        else:
+            st.write("- User List: PM_users.txt")
         
         if st.button("Export Current Configuration"):
             config_data = {
