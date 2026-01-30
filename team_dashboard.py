@@ -450,14 +450,6 @@ def show_daily_task_entry():
                 )
                 calculated_total = base_total + overtime_hours
                 st.metric("Total Hours", f"{calculated_total:.2f} hours")
-
-                st.markdown("**Achievement Rate**")
-                if spatial_selected and settings['spatial_target'] > 0:
-                    spatial_rate = (spatial_completed / settings['spatial_target']) * 100
-                    st.metric("Spatial Achievement", f"{spatial_rate:.1f}%")
-                if textual_selected and settings['textual_target'] > 0:
-                    textual_rate = (textual_completed / settings['textual_target']) * 100
-                    st.metric("Textual Achievement", f"{textual_rate:.1f}%")
             
             # Notes
             st.markdown("**Notes**")
@@ -541,6 +533,7 @@ def show_daily_task_entry():
                         })
                         
                         st.success("Task report submitted successfully!")
+                        st.cache_data.clear()
                         st.balloons()
                             
                     except Exception as e:
@@ -582,7 +575,11 @@ def show_daily_task_entry():
             # Recent submissions
             st.markdown("**Recent Submissions:**")
             for _, row in today_stats.tail(3).iterrows():
-                st.write(f"• {row['user_names']} - {row['submit_time'][:10]}")
+                try:
+                    submit_date = pd.to_datetime(row['submit_time']).strftime("%Y-%m-%d")
+                except Exception:
+                    submit_date = str(row['submit_time'])[:10]
+                st.write(f"• {row['user_names']} - {submit_date}")
         else:
             st.info("No submissions today yet")
             
@@ -643,6 +640,7 @@ def save_task_submission(data):
     conn.commit()
     conn.close()
 
+@st.cache_data(ttl=60)
 def get_today_submissions():
     """Get today's submission data"""
     conn = get_database_connection()
@@ -661,6 +659,7 @@ def get_today_submissions():
         conn.close()
     return df
 
+@st.cache_data(ttl=120)
 def get_current_week_submissions():
     """Get current week submission data"""
     conn = get_database_connection()
@@ -738,6 +737,7 @@ def show_performance_overview():
     else:
         st.info("No data available for the selected date range")
 
+@st.cache_data(ttl=300)
 def get_submissions_in_range(start_date, end_date):
     """Get submissions within date range"""
     conn = get_database_connection()
