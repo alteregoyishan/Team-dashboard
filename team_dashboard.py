@@ -40,7 +40,7 @@ DEFAULT_BATCH_OPTIONS = [
 # Admin access code (set ADMIN_ACCESS_CODE env var to override)
 ADMIN_ACCESS_CODE = os.getenv("ADMIN_ACCESS_CODE", "PM_ADMIN")
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=600)  # Cache for 10 minutes
 def load_users_from_file():
     """Load users from PM.xlsx or PM_users.txt file or default list"""
     try:
@@ -120,6 +120,10 @@ def _render_task_entries(task_label, batch_options, key_prefix, allow_empty_batc
     default_rows = [{"batch": "", "completed": 0, "hours": 0.0}]
     editor_key = f"{key_prefix}_entries"
 
+    # Use session state to maintain editor state between reruns
+    if editor_key not in st.session_state:
+        st.session_state[editor_key] = default_rows.copy()
+
     column_config = {
         "batch": st.column_config.SelectboxColumn(
             "Batch",
@@ -141,14 +145,20 @@ def _render_task_entries(task_label, batch_options, key_prefix, allow_empty_batc
     }
 
     edited = st.data_editor(
-        default_rows,
+        st.session_state[editor_key],
         num_rows="dynamic",
         key=editor_key,
         column_config=column_config,
         use_container_width=True,
     )
 
-    rows = edited.to_dict(orient="records") if hasattr(edited, "to_dict") else edited
+    # Update session state
+    if hasattr(edited, "to_dict"):
+        rows = edited.to_dict(orient="records")
+        st.session_state[editor_key] = rows
+    else:
+        rows = edited
+    
     normalized = _normalize_task_rows(rows, allow_empty_batch=allow_empty_batch)
     total_completed = sum(r["completed"] for r in normalized)
     total_hours = sum(r["hours"] for r in normalized)
@@ -249,7 +259,7 @@ def update_app_settings(spatial_target: int, textual_target: int):
     conn.commit()
     conn.close()
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=600)  # Cache for 10 minutes
 def load_team_mapping_file():
     """Load team mapping from PM team file (PM.xlsx or PM_team.*)"""
     if os.path.exists('PM.xlsx'):
@@ -312,7 +322,7 @@ def upsert_team_member(name: str, team_function: str):
     conn.commit()
     conn.close()
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=600)  # Cache for 10 minutes
 def get_batch_options() -> List[str]:
     """Get batch options from DB"""
     conn = get_database_connection()
@@ -389,11 +399,15 @@ def main():
 
 def show_daily_task_entry():
     """Daily task entry page"""
+    # Pre-load data to avoid repeated queries during user interaction
+    batch_options = get_batch_options()
+    current_users = load_users_from_file()
+    settings = get_app_settings()
+    
     # Create two column layout
     col_form, col_preview = st.columns([2, 1])
     
     with col_form:
-        batch_options = get_batch_options()
         # Date and user selection outside form for immediate feedback
         submission_date = st.date_input(
             "Date *", 
@@ -402,7 +416,6 @@ def show_daily_task_entry():
         )
         
         # User name selection
-        current_users = load_users_from_file()
         user_name = st.selectbox(
             "User Name *",
             options=current_users,
@@ -441,58 +454,58 @@ def show_daily_task_entry():
 
         task_entries = []
         
-        show_task_details = st.checkbox("Show Task Details", value=False)
-
-        # Show task details only when requested and tasks selected
-        if show_task_details and any([spatial_selected, textual_selected, qa_selected, qc_selected, automation_selected, other_selected]):
+        # Show task details immediately when tasks are selected
+        if any([spatial_selected, textual_selected, qa_selected, qc_selected, automation_selected, other_selected]):
             st.markdown("---")
             st.markdown("**Task Details**")
             
-            # Spatial Tasks
-            if spatial_selected:
-                rows, spatial_completed, spatial_hours, spatial_batches = _render_task_entries(
-                    "Spatial", batch_options, "spatial"
-                )
-                task_entries += [{"task_type": "Spatial", **r} for r in rows]
+            # Create a container to organize task entries
+            details_container = st.container()
             
-            # Textual Tasks
-            if textual_selected:
-                rows, textual_completed, textual_hours, textual_batches = _render_task_entries(
-                    "Textual", batch_options, "textual"
-                )
-                task_entries += [{"task_type": "Textual", **r} for r in rows]
-            
-            # QA Tasks
-            if qa_selected:
-                rows, qa_completed, qa_hours, qa_batches = _render_task_entries(
-                    "QA", batch_options, "qa"
-                )
-                task_entries += [{"task_type": "QA", **r} for r in rows]
-            
-            # QC Tasks
-            if qc_selected:
-                rows, qc_completed, qc_hours, qc_batches = _render_task_entries(
-                    "QC", batch_options, "qc"
-                )
-                task_entries += [{"task_type": "QC", **r} for r in rows]
-            
-            # Automation Tasks
-            if automation_selected:
-                rows, automation_completed, automation_hours, automation_batches = _render_task_entries(
-                    "Automation", batch_options, "automation", completed_max=100.0
-                )
-                task_entries += [{"task_type": "Automation", **r} for r in rows]
-            
-            # Other Tasks
-            if other_selected:
-                rows, other_completed, other_hours, other_batches = _render_task_entries(
-                    "Other", batch_options, "other", allow_empty_batch=True
-                )
-                task_entries += [{"task_type": "Other", **r} for r in rows]
+            with details_container:
+                # Spatial Tasks
+                if spatial_selected:
+                    rows, spatial_completed, spatial_hours, spatial_batches = _render_task_entries(
+                        "Spatial", batch_options, "spatial"
+                    )
+                    task_entries += [{"task_type": "Spatial", **r} for r in rows]
+                
+                # Textual Tasks
+                if textual_selected:
+                    rows, textual_completed, textual_hours, textual_batches = _render_task_entries(
+                        "Textual", batch_options, "textual"
+                    )
+                    task_entries += [{"task_type": "Textual", **r} for r in rows]
+                
+                # QA Tasks
+                if qa_selected:
+                    rows, qa_completed, qa_hours, qa_batches = _render_task_entries(
+                        "QA", batch_options, "qa"
+                    )
+                    task_entries += [{"task_type": "QA", **r} for r in rows]
+                
+                # QC Tasks
+                if qc_selected:
+                    rows, qc_completed, qc_hours, qc_batches = _render_task_entries(
+                        "QC", batch_options, "qc"
+                    )
+                    task_entries += [{"task_type": "QC", **r} for r in rows]
+                
+                # Automation Tasks
+                if automation_selected:
+                    rows, automation_completed, automation_hours, automation_batches = _render_task_entries(
+                        "Automation", batch_options, "automation", completed_max=100.0
+                    )
+                    task_entries += [{"task_type": "Automation", **r} for r in rows]
+                
+                # Other Tasks
+                if other_selected:
+                    rows, other_completed, other_hours, other_batches = _render_task_entries(
+                        "Other", batch_options, "other", allow_empty_batch=True
+                    )
+                    task_entries += [{"task_type": "Other", **r} for r in rows]
 
         # Now create form with only summary and submit
-        settings = get_app_settings()
-
         with st.form("daily_task_form", clear_on_submit=False):
             # Calculate total hours
             base_total = (spatial_hours + textual_hours + qa_hours + 
