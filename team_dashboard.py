@@ -40,6 +40,7 @@ DEFAULT_BATCH_OPTIONS = [
 # Admin access code (set ADMIN_ACCESS_CODE env var to override)
 ADMIN_ACCESS_CODE = os.getenv("ADMIN_ACCESS_CODE", "PM_ADMIN")
 
+@st.cache_data(ttl=300)
 def load_users_from_file():
     """Load users from PM.xlsx or PM_users.txt file or default list"""
     try:
@@ -80,6 +81,7 @@ def save_users_to_file(users):
         with open('PM_users.txt', 'w', encoding='utf-8') as f:
             for user in users:
                 f.write(f"{user}\n")
+        st.cache_data.clear()
         return True
     except Exception:
         return False
@@ -247,6 +249,7 @@ def update_app_settings(spatial_target: int, textual_target: int):
     conn.commit()
     conn.close()
 
+@st.cache_data(ttl=300)
 def load_team_mapping_file():
     """Load team mapping from PM team file (PM.xlsx or PM_team.*)"""
     if os.path.exists('PM.xlsx'):
@@ -309,6 +312,7 @@ def upsert_team_member(name: str, team_function: str):
     conn.commit()
     conn.close()
 
+@st.cache_data(ttl=300)
 def get_batch_options() -> List[str]:
     """Get batch options from DB"""
     conn = get_database_connection()
@@ -333,6 +337,7 @@ def add_batch_option(name: str):
         cursor.execute("INSERT OR IGNORE INTO batch_options (name) VALUES (?)", (name,))
     conn.commit()
     conn.close()
+    st.cache_data.clear()
 
 def delete_batch_option(name: str):
     """Delete a batch option"""
@@ -344,6 +349,7 @@ def delete_batch_option(name: str):
         cursor.execute("DELETE FROM batch_options WHERE name = ?", (name,))
     conn.commit()
     conn.close()
+    st.cache_data.clear()
 
 def main():
     # Initialize database tables for cloud deployment
@@ -435,8 +441,10 @@ def show_daily_task_entry():
 
         task_entries = []
         
-        # Show task details immediately when checkboxes are selected
-        if any([spatial_selected, textual_selected, qa_selected, qc_selected, automation_selected, other_selected]):
+        show_task_details = st.checkbox("Show Task Details", value=False)
+
+        # Show task details only when requested and tasks selected
+        if show_task_details and any([spatial_selected, textual_selected, qa_selected, qc_selected, automation_selected, other_selected]):
             st.markdown("---")
             st.markdown("**Task Details**")
             
@@ -597,10 +605,18 @@ def show_daily_task_entry():
     
     with col_preview:
         st.subheader("Today's Summary")
-        show_preview = st.toggle("Show Summary Charts", value=True)
-        if not show_preview:
-            st.info("Summary charts hidden for faster interaction")
+        if "show_summary" not in st.session_state:
+            st.session_state.show_summary = False
+
+        if not st.session_state.show_summary:
+            if st.button("Load Summary", use_container_width=True):
+                st.session_state.show_summary = True
+                st.cache_data.clear()
+            st.info("Summary is hidden for faster interaction")
             return
+        else:
+            if st.button("Refresh Summary", use_container_width=True):
+                st.cache_data.clear()
         
         # Show today's submission statistics
         today_stats = get_today_submissions()
@@ -656,6 +672,10 @@ def save_task_submission(data, task_entries):
     """Save task submission data"""
     conn = get_database_connection()
     cursor = conn.cursor()
+    if db_adapter.is_postgres:
+        if not st.session_state.get("db_tables_ready", False):
+            db_adapter.create_tables()
+            st.session_state.db_tables_ready = True
     placeholder = "%s" if db_adapter.is_postgres else "?"
     values_placeholder = ", ".join([placeholder] * 24)
     
