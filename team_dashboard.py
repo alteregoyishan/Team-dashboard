@@ -41,8 +41,31 @@ DEFAULT_BATCH_OPTIONS = [
 ADMIN_ACCESS_CODE = os.getenv("ADMIN_ACCESS_CODE", "PM_ADMIN")
 
 def load_users_from_file():
-    """Load users from PM_users.txt file or default list"""
+    """Load users from PM.xlsx or PM_users.txt file or default list"""
     try:
+        # Prefer PM.xlsx if it exists
+        if os.path.exists('PM.xlsx'):
+            df = pd.read_excel('PM.xlsx')
+            # Try common column names for user list
+            user_col = None
+            for col in df.columns:
+                col_norm = str(col).strip().lower()
+                if col_norm in {'name', 'user name', 'username', 'user'}:
+                    user_col = col
+                    break
+            if user_col:
+                users = (
+                    df[user_col]
+                    .dropna()
+                    .astype(str)
+                    .str.strip()
+                    .tolist()
+                )
+                users = [u for u in users if u]
+                if users:
+                    return users
+
+        # Fallback to PM_users.txt
         with open('PM_users.txt', 'r', encoding='utf-8') as f:
             users = [line.strip() for line in f.readlines() if line.strip()]
             return users if users else USER_LIST
@@ -182,11 +205,18 @@ def upsert_team_member(name: str, team_function: str):
     """Insert or update a team member mapping"""
     conn = get_database_connection()
     cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO team_members (name, team_function) VALUES (?, ?) "
-        "ON CONFLICT(name) DO UPDATE SET team_function = excluded.team_function",
-        (name, team_function)
-    )
+    if db_adapter.is_postgres:
+        cursor.execute(
+            "INSERT INTO team_members (name, team_function) VALUES (%s, %s) "
+            "ON CONFLICT(name) DO UPDATE SET team_function = excluded.team_function",
+            (name, team_function)
+        )
+    else:
+        cursor.execute(
+            "INSERT INTO team_members (name, team_function) VALUES (?, ?) "
+            "ON CONFLICT(name) DO UPDATE SET team_function = excluded.team_function",
+            (name, team_function)
+        )
     conn.commit()
     conn.close()
 
