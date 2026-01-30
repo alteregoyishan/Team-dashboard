@@ -887,7 +887,7 @@ def get_submissions_in_range(start_date, end_date):
         conn.close()
     return df
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=600)
 def get_task_entries_in_range(start_date, end_date):
     """Get task entries within date range"""
     conn = get_database_connection()
@@ -1079,6 +1079,26 @@ def show_data_management():
         if not df.empty:
             st.dataframe(df, use_container_width=True, height=400)
             st.write(f"Showing {len(df)} records")
+
+            with st.expander("Batch Details (per task entry)"):
+                try:
+                    start_date = pd.to_datetime(df['submission_date']).min().date()
+                    end_date = pd.to_datetime(df['submission_date']).max().date()
+                    entries_df = get_task_entries_in_range(start_date, end_date)
+                except Exception:
+                    entries_df = pd.DataFrame()
+
+                if not entries_df.empty:
+                    if date_filter:
+                        entries_df = entries_df[pd.to_datetime(entries_df['submission_date']).dt.date == date_filter]
+                    if user_filter != "All Users":
+                        entries_df = entries_df[entries_df['user_name'] == user_filter]
+
+                if not entries_df.empty:
+                    entries_df = entries_df.sort_values(['submission_date', 'user_name', 'task_type', 'batch'])
+                    st.dataframe(entries_df, use_container_width=True, height=350)
+                else:
+                    st.info("No batch details match the current filters")
         else:
             st.info("No data matches the current filters")
     
@@ -1112,6 +1132,11 @@ def show_data_management():
         with tab3:
             st.subheader("Export Data")
             
+            export_dataset = st.selectbox(
+                "Export Dataset",
+                ["Task Submissions (summary)", "Task Entries (per batch)"]
+            )
+
             export_format = st.radio("Export Format", ["Excel", "CSV", "JSON"])
             
             col1, col2 = st.columns(2)
@@ -1121,15 +1146,21 @@ def show_data_management():
                 export_end_date = st.date_input("Export End Date", value=date.today())
             
             if st.button("Export Data"):
-                df = get_submissions_in_range(export_start_date, export_end_date)
-                df = _prepare_export_df(df)
+                if export_dataset == "Task Entries (per batch)":
+                    df = get_task_entries_in_range(export_start_date, export_end_date)
+                else:
+                    df = get_submissions_in_range(export_start_date, export_end_date)
+                    df = _prepare_export_df(df)
                 
                 if export_format == "Excel":
-                    output = create_excel_export(df)
+                    if export_dataset == "Task Entries (per batch)":
+                        output = create_excel_entries_export(df)
+                    else:
+                        output = create_excel_export(df)
                     st.download_button(
                         "Download Excel",
                         output,
-                        f"task_submissions_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                        f"task_export_{datetime.now().strftime('%Y%m%d')}.xlsx",
                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
                 elif export_format == "CSV":
@@ -1281,6 +1312,14 @@ def create_excel_export(df):
             summary_df = pd.DataFrame(summary_data)
             summary_df.to_excel(writer, sheet_name='Summary', index=False)
     
+    return output.getvalue()
+
+def create_excel_entries_export(df):
+    """Create Excel export for task entries (per batch)."""
+    export_df = df.copy()
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        export_df.to_excel(writer, sheet_name='Task Entries', index=False)
     return output.getvalue()
 
 def show_analytics():
