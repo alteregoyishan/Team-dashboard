@@ -468,9 +468,57 @@ def show_daily_task_entry():
 
         task_entries = []
 
-        # Hours summary outside form to avoid Enter triggering submit
-        overtime_hours = 0.0
+        # Task details outside form for live updates
         if any([spatial_selected, textual_selected, qa_selected, qc_selected, automation_selected, other_selected]):
+            st.markdown("---")
+            st.markdown("**Task Details**")
+
+            details_container = st.container()
+
+            with details_container:
+                # Spatial Tasks
+                if spatial_selected:
+                    rows, spatial_completed, spatial_hours, spatial_batches = _render_task_entries(
+                        "Spatial", batch_options, "spatial"
+                    )
+                    task_entries += [{"task_type": "Spatial", **r} for r in rows]
+                
+                # Textual Tasks
+                if textual_selected:
+                    rows, textual_completed, textual_hours, textual_batches = _render_task_entries(
+                        "Textual", batch_options, "textual"
+                    )
+                    task_entries += [{"task_type": "Textual", **r} for r in rows]
+                
+                # QA Tasks
+                if qa_selected:
+                    rows, qa_completed, qa_hours, qa_batches = _render_task_entries(
+                        "QA", batch_options, "qa"
+                    )
+                    task_entries += [{"task_type": "QA", **r} for r in rows]
+                
+                # QC Tasks
+                if qc_selected:
+                    rows, qc_completed, qc_hours, qc_batches = _render_task_entries(
+                        "QC", batch_options, "qc"
+                    )
+                    task_entries += [{"task_type": "QC", **r} for r in rows]
+                
+                # Automation Tasks
+                if automation_selected:
+                    rows, automation_completed, automation_hours, automation_batches = _render_task_entries(
+                        "Automation", batch_options, "automation", completed_max=100.0
+                    )
+                    task_entries += [{"task_type": "Automation", **r} for r in rows]
+                
+                # Other Tasks
+                if other_selected:
+                    rows, other_completed, other_hours, other_batches = _render_task_entries(
+                        "Other", batch_options, "other", allow_empty_batch=True
+                    )
+                    task_entries += [{"task_type": "Other", **r} for r in rows]
+
+            # Hours summary outside form to avoid Enter triggering submit
             st.markdown("---")
             st.markdown("**Hours Summary**")
             overtime_hours = st.number_input(
@@ -482,67 +530,15 @@ def show_daily_task_entry():
                 key="overtime_hours_input",
                 help="Use the Submit button below to save changes."
             )
-        
-        # Now create form with task details, summary, and submit
-        with st.form("daily_task_form", clear_on_submit=False):
-            # Task details inside form to avoid reruns on each edit
-            if any([spatial_selected, textual_selected, qa_selected, qc_selected, automation_selected, other_selected]):
-                st.markdown("---")
-                st.markdown("**Task Details**")
-
-                details_container = st.container()
-
-                with details_container:
-                    # Spatial Tasks
-                    if spatial_selected:
-                        rows, spatial_completed, spatial_hours, spatial_batches = _render_task_entries(
-                            "Spatial", batch_options, "spatial"
-                        )
-                        task_entries += [{"task_type": "Spatial", **r} for r in rows]
-                    
-                    # Textual Tasks
-                    if textual_selected:
-                        rows, textual_completed, textual_hours, textual_batches = _render_task_entries(
-                            "Textual", batch_options, "textual"
-                        )
-                        task_entries += [{"task_type": "Textual", **r} for r in rows]
-                    
-                    # QA Tasks
-                    if qa_selected:
-                        rows, qa_completed, qa_hours, qa_batches = _render_task_entries(
-                            "QA", batch_options, "qa"
-                        )
-                        task_entries += [{"task_type": "QA", **r} for r in rows]
-                    
-                    # QC Tasks
-                    if qc_selected:
-                        rows, qc_completed, qc_hours, qc_batches = _render_task_entries(
-                            "QC", batch_options, "qc"
-                        )
-                        task_entries += [{"task_type": "QC", **r} for r in rows]
-                    
-                    # Automation Tasks
-                    if automation_selected:
-                        rows, automation_completed, automation_hours, automation_batches = _render_task_entries(
-                            "Automation", batch_options, "automation", completed_max=100.0
-                        )
-                        task_entries += [{"task_type": "Automation", **r} for r in rows]
-                    
-                    # Other Tasks
-                    if other_selected:
-                        rows, other_completed, other_hours, other_batches = _render_task_entries(
-                            "Other", batch_options, "other", allow_empty_batch=True
-                        )
-                        task_entries += [{"task_type": "Other", **r} for r in rows]
 
             # Calculate total hours
             base_total = (spatial_hours + textual_hours + qa_hours + 
                          qc_hours + automation_hours + other_hours)
+            calculated_total = base_total + float(overtime_hours or 0.0)
+            st.metric("Total Hours", f"{calculated_total:.2f} hours")
 
-            # Show total hours only if tasks are selected
-            if any([spatial_selected, textual_selected, qa_selected, qc_selected, automation_selected, other_selected]):
-                calculated_total = base_total + float(overtime_hours or 0.0)
-                st.metric("Total Hours", f"{calculated_total:.2f} hours")
+        # Now create form with notes and submit
+        with st.form("daily_task_form", clear_on_submit=False):
 
             # Notes
             st.markdown("**Notes**")
