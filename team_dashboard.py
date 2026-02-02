@@ -637,6 +637,104 @@ def show_daily_task_entry():
                     except Exception as e:
                         st.error(f"Error submitting form: {str(e)}")
 
+def save_task_submission(data, task_entries):
+    """Save task submission data"""
+    conn = get_database_connection()
+    cursor = conn.cursor()
+    if db_adapter.is_postgres and not st.session_state.get("db_tables_ready", False):
+        db_adapter.create_tables()
+        st.session_state.db_tables_ready = True
+    placeholder = "%s" if db_adapter.is_postgres else "?"
+    values_placeholder = ", ".join([placeholder] * 24)
+    
+    insert_sql = f'''
+    INSERT INTO task_submissions 
+    (submission_date, user_names, 
+     spatial_completed, spatial_hours, spatial_batches,
+     textual_completed, textual_hours, textual_batches,
+     qa_completed, qa_hours, qa_batches,
+     qc_completed, qc_hours, qc_batches,
+     automation_completed, automation_hours, automation_batches,
+     other_completed, other_hours, other_batches,
+    overtime_hours, total_hours, note, submitted_by)
+    VALUES ({values_placeholder})
+    '''
+
+    if db_adapter.is_postgres:
+        insert_sql += " RETURNING id"
+
+    cursor.execute(insert_sql, (
+        data['submission_date'],
+        data['user_names'],
+        data['spatial_completed'],
+        data['spatial_hours'],
+        data['spatial_batches'],
+        data['textual_completed'],
+        data['textual_hours'],
+        data['textual_batches'],
+        data['qa_completed'],
+        data['qa_hours'],
+        data['qa_batches'],
+        data['qc_completed'],
+        data['qc_hours'],
+        data['qc_batches'],
+        data['automation_completed'],
+        data['automation_hours'],
+        data['automation_batches'],
+        data['other_completed'],
+        data['other_hours'],
+        data['other_batches'],
+        data['overtime_hours'],
+        data['total_hours'],
+        data['note'],
+        data['submitted_by']
+    ))
+
+    if db_adapter.is_postgres:
+        submission_id = cursor.fetchone()[0]
+    else:
+        submission_id = cursor.lastrowid
+
+    # Insert task entries (per batch)
+    entry_placeholder = "%s" if db_adapter.is_postgres else "?"
+    entry_values_placeholder = ", ".join([entry_placeholder] * 7)
+    entry_sql = f'''
+    INSERT INTO task_entries
+    (submission_id, submission_date, user_name, task_type, batch, completed, hours)
+    VALUES ({entry_values_placeholder})
+    '''
+
+    try:
+        for entry in task_entries:
+            cursor.execute(entry_sql, (
+                submission_id,
+                data['submission_date'],
+                data['user_names'],
+                entry['task_type'],
+                entry['batch'],
+                entry['completed'],
+                entry['hours']
+            ))
+    except Exception as e:
+        if db_adapter.is_postgres and "task_entries" in str(e):
+            db_adapter.create_tables()
+            st.session_state.db_tables_ready = True
+            for entry in task_entries:
+                cursor.execute(entry_sql, (
+                    submission_id,
+                    data['submission_date'],
+                    data['user_names'],
+                    entry['task_type'],
+                    entry['batch'],
+                    entry['completed'],
+                    entry['hours']
+                ))
+        else:
+            raise
+
+    conn.commit()
+    conn.close()
+
 # Ensure Add New User updates the user list
 @st.cache_data(ttl=600)
 def add_new_user(new_user):
