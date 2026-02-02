@@ -467,6 +467,21 @@ def show_daily_task_entry():
         qc_batches = automation_batches = other_batches = []
 
         task_entries = []
+
+        # Hours summary outside form to avoid Enter triggering submit
+        overtime_hours = 0.0
+        if any([spatial_selected, textual_selected, qa_selected, qc_selected, automation_selected, other_selected]):
+            st.markdown("---")
+            st.markdown("**Hours Summary**")
+            overtime_hours = st.number_input(
+                "Over Time Hours (optional)",
+                min_value=0.0,
+                step=0.1,
+                format="%.2f",
+                value=st.session_state.get("overtime_hours_input", 0.0),
+                key="overtime_hours_input",
+                help="Use the Submit button below to save changes."
+            )
         
         # Now create form with task details, summary, and submit
         with st.form("daily_task_form", clear_on_submit=False):
@@ -524,20 +539,9 @@ def show_daily_task_entry():
             base_total = (spatial_hours + textual_hours + qa_hours + 
                          qc_hours + automation_hours + other_hours)
 
-            # Show hours summary only if tasks are selected
+            # Show total hours only if tasks are selected
             if any([spatial_selected, textual_selected, qa_selected, qc_selected, automation_selected, other_selected]):
-                st.markdown("---")
-                st.markdown("**Hours Summary**")
-                overtime_hours = st.number_input(
-                    "Over Time Hours (optional)",
-                    min_value=0.0,
-                    step=0.1,
-                    format="%.2f",
-                    value=0.0,
-                    key="overtime_hours_input",
-                    help="Use the Submit button below to save changes. Pressing Enter here will not submit the form."
-                )
-                calculated_total = base_total + overtime_hours
+                calculated_total = base_total + float(overtime_hours or 0.0)
                 st.metric("Total Hours", f"{calculated_total:.2f} hours")
 
             # Notes
