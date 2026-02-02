@@ -363,7 +363,7 @@ def delete_batch_option(name: str):
 
 def main():
     # Initialize database tables for cloud deployment
-    if USE_CLOUD_DB:
+    if USE_CLOUD_DB and not st.session_state.get("db_tables_ready", False):
         try:
             db_adapter.create_tables()
             st.session_state.db_tables_ready = True
@@ -455,62 +455,62 @@ def show_daily_task_entry():
 
         task_entries = []
         
-        # Show task details immediately when checkboxes are selected
-        if any([spatial_selected, textual_selected, qa_selected, qc_selected, automation_selected, other_selected]):
-            st.markdown("---")
-            st.markdown("**Task Details**")
-
-            details_container = st.container()
-
-            with details_container:
-                # Spatial Tasks
-                if spatial_selected:
-                    rows, spatial_completed, spatial_hours, spatial_batches = _render_task_entries(
-                        "Spatial", batch_options, "spatial"
-                    )
-                    task_entries += [{"task_type": "Spatial", **r} for r in rows]
-                
-                # Textual Tasks
-                if textual_selected:
-                    rows, textual_completed, textual_hours, textual_batches = _render_task_entries(
-                        "Textual", batch_options, "textual"
-                    )
-                    task_entries += [{"task_type": "Textual", **r} for r in rows]
-                
-                # QA Tasks
-                if qa_selected:
-                    rows, qa_completed, qa_hours, qa_batches = _render_task_entries(
-                        "QA", batch_options, "qa"
-                    )
-                    task_entries += [{"task_type": "QA", **r} for r in rows]
-                
-                # QC Tasks
-                if qc_selected:
-                    rows, qc_completed, qc_hours, qc_batches = _render_task_entries(
-                        "QC", batch_options, "qc"
-                    )
-                    task_entries += [{"task_type": "QC", **r} for r in rows]
-                
-                # Automation Tasks
-                if automation_selected:
-                    rows, automation_completed, automation_hours, automation_batches = _render_task_entries(
-                        "Automation", batch_options, "automation", completed_max=100.0
-                    )
-                    task_entries += [{"task_type": "Automation", **r} for r in rows]
-                
-                # Other Tasks
-                if other_selected:
-                    rows, other_completed, other_hours, other_batches = _render_task_entries(
-                        "Other", batch_options, "other", allow_empty_batch=True
-                    )
-                    task_entries += [{"task_type": "Other", **r} for r in rows]
-
-        # Now create form with only summary and submit
-
+        # Now create form with task details, summary, and submit
         with st.form("daily_task_form", clear_on_submit=False):
+            # Show task details inside form to avoid reruns on each edit
+            if any([spatial_selected, textual_selected, qa_selected, qc_selected, automation_selected, other_selected]):
+                st.markdown("---")
+                st.markdown("**Task Details**")
+
+                details_container = st.container()
+
+                with details_container:
+                    # Spatial Tasks
+                    if spatial_selected:
+                        rows, spatial_completed, spatial_hours, spatial_batches = _render_task_entries(
+                            "Spatial", batch_options, "spatial"
+                        )
+                        task_entries += [{"task_type": "Spatial", **r} for r in rows]
+                    
+                    # Textual Tasks
+                    if textual_selected:
+                        rows, textual_completed, textual_hours, textual_batches = _render_task_entries(
+                            "Textual", batch_options, "textual"
+                        )
+                        task_entries += [{"task_type": "Textual", **r} for r in rows]
+                    
+                    # QA Tasks
+                    if qa_selected:
+                        rows, qa_completed, qa_hours, qa_batches = _render_task_entries(
+                            "QA", batch_options, "qa"
+                        )
+                        task_entries += [{"task_type": "QA", **r} for r in rows]
+                    
+                    # QC Tasks
+                    if qc_selected:
+                        rows, qc_completed, qc_hours, qc_batches = _render_task_entries(
+                            "QC", batch_options, "qc"
+                        )
+                        task_entries += [{"task_type": "QC", **r} for r in rows]
+                    
+                    # Automation Tasks
+                    if automation_selected:
+                        rows, automation_completed, automation_hours, automation_batches = _render_task_entries(
+                            "Automation", batch_options, "automation", completed_max=100.0
+                        )
+                        task_entries += [{"task_type": "Automation", **r} for r in rows]
+                    
+                    # Other Tasks
+                    if other_selected:
+                        rows, other_completed, other_hours, other_batches = _render_task_entries(
+                            "Other", batch_options, "other", allow_empty_batch=True
+                        )
+                        task_entries += [{"task_type": "Other", **r} for r in rows]
+
             # Calculate total hours
             base_total = (spatial_hours + textual_hours + qa_hours + 
                          qc_hours + automation_hours + other_hours)
+            calculated_total = base_total
             
             # Show hours summary only if tasks are selected
             if any([spatial_selected, textual_selected, qa_selected, qc_selected, automation_selected, other_selected]):
@@ -619,9 +619,14 @@ def show_daily_task_entry():
     
     with col_preview:
         st.subheader("Today's Summary")
-        show_preview = st.toggle("Show Summary Charts", value=True)
-        if not show_preview:
-            st.info("Summary charts hidden for faster interaction")
+        if "summary_loaded" not in st.session_state:
+            st.session_state.summary_loaded = False
+
+        if st.button("Load/Refresh Summary"):
+            st.session_state.summary_loaded = True
+
+        if not st.session_state.summary_loaded:
+            st.info("Click to load summary charts")
             return
         
         # Show today's submission statistics
@@ -1055,25 +1060,40 @@ def show_data_management():
     with tab1:
         st.subheader("All Task Submissions")
         
+        if "data_filters" not in st.session_state:
+            st.session_state.data_filters = {"date": None, "user": "All Users"}
+
         # Filter options
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            date_filter = st.date_input("Filter by Date", value=None)
-        with col2:
-            user_filter = st.selectbox("Filter by User", ["All Users"] + load_users_from_file())
-        with col3:
-            if st.button("Apply Filters"):
-                pass
-        
+        with st.form("data_filters_form"):
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                date_filter = st.date_input(
+                    "Filter by Date",
+                    value=st.session_state.data_filters.get("date")
+                )
+            with col2:
+                user_options = ["All Users"] + load_users_from_file()
+                current_user = st.session_state.data_filters.get("user", "All Users")
+                try:
+                    user_index = user_options.index(current_user)
+                except ValueError:
+                    user_index = 0
+                user_filter = st.selectbox("Filter by User", user_options, index=user_index)
+            with col3:
+                apply_filters = st.form_submit_button("Apply Filters")
+
+        if apply_filters:
+            st.session_state.data_filters = {"date": date_filter, "user": user_filter}
+
         # Apply filters
+        filters = st.session_state.data_filters
         df = get_all_submissions()
         
-        if date_filter:
-            df = df[pd.to_datetime(df['submission_date']).dt.date == date_filter]
+        if filters.get("date"):
+            df = df[pd.to_datetime(df['submission_date']).dt.date == filters["date"]]
         
-        if user_filter != "All Users":
-            df = df[df['user_names'] == user_filter]
+        if filters.get("user") != "All Users":
+            df = df[df['user_names'] == filters["user"]]
         
         # Display data
         if not df.empty:
@@ -1089,10 +1109,10 @@ def show_data_management():
                     entries_df = pd.DataFrame()
 
                 if not entries_df.empty:
-                    if date_filter:
-                        entries_df = entries_df[pd.to_datetime(entries_df['submission_date']).dt.date == date_filter]
-                    if user_filter != "All Users":
-                        entries_df = entries_df[entries_df['user_name'] == user_filter]
+                    if filters.get("date"):
+                        entries_df = entries_df[pd.to_datetime(entries_df['submission_date']).dt.date == filters["date"]]
+                    if filters.get("user") != "All Users":
+                        entries_df = entries_df[entries_df['user_name'] == filters["user"]]
 
                 if not entries_df.empty:
                     entries_df = _prepare_entries_df(entries_df)
