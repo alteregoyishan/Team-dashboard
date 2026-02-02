@@ -1604,23 +1604,6 @@ def show_configuration():
             st.write("Database: Empty or not accessible")
         
         st.markdown("---")
-        st.subheader("Team Function (Admin Only)")
-        if st.session_state.get("is_admin", False):
-            current_users = load_users_from_file()
-            team_df = get_team_members()
-            with st.form("team_function_form"):
-                selected_user = st.selectbox("User", current_users)
-                existing = team_df[team_df['name'] == selected_user]
-                current_team = existing['team_function'].iloc[0] if not existing.empty else ""
-                team_function = st.text_input("Team Function", value=current_team)
-                if st.form_submit_button("Save Team Function"):
-                    upsert_team_member(selected_user, team_function.strip())
-                    st.success("Team function updated")
-                    st.rerun()
-        else:
-            st.info("Admin access required to edit team functions")
-
-        st.markdown("---")
         st.markdown("**File Locations:**")
         st.write("- Application: team_dashboard.py")
         if db_adapter.is_postgres:
