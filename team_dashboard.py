@@ -137,6 +137,7 @@ def _render_task_entries(task_label, batch_options, key_prefix, allow_empty_batc
     if state_key not in st.session_state:
         st.session_state[state_key] = default_rows.copy()
 
+    completed_label = "Completed (%)" if task_label.lower() == "automation" else "Completed"
     column_config = {
         "batch": st.column_config.SelectboxColumn(
             "Batch",
@@ -144,7 +145,7 @@ def _render_task_entries(task_label, batch_options, key_prefix, allow_empty_batc
             required=not allow_empty_batch,
         ),
         "completed": st.column_config.NumberColumn(
-            "Completed",
+            completed_label,
             min_value=0.0,
             max_value=completed_max,
             step=1.0,
