@@ -457,61 +457,10 @@ def show_daily_task_entry():
         
         # Now create form with task details, summary, and submit
         with st.form("daily_task_form", clear_on_submit=False):
-            # Show task details inside form to avoid reruns on each edit
-            if any([spatial_selected, textual_selected, qa_selected, qc_selected, automation_selected, other_selected]):
-                st.markdown("---")
-                st.markdown("**Task Details**")
-
-                details_container = st.container()
-
-                with details_container:
-                    # Spatial Tasks
-                    if spatial_selected:
-                        rows, spatial_completed, spatial_hours, spatial_batches = _render_task_entries(
-                            "Spatial", batch_options, "spatial"
-                        )
-                        task_entries += [{"task_type": "Spatial", **r} for r in rows]
-                    
-                    # Textual Tasks
-                    if textual_selected:
-                        rows, textual_completed, textual_hours, textual_batches = _render_task_entries(
-                            "Textual", batch_options, "textual"
-                        )
-                        task_entries += [{"task_type": "Textual", **r} for r in rows]
-                    
-                    # QA Tasks
-                    if qa_selected:
-                        rows, qa_completed, qa_hours, qa_batches = _render_task_entries(
-                            "QA", batch_options, "qa"
-                        )
-                        task_entries += [{"task_type": "QA", **r} for r in rows]
-                    
-                    # QC Tasks
-                    if qc_selected:
-                        rows, qc_completed, qc_hours, qc_batches = _render_task_entries(
-                            "QC", batch_options, "qc"
-                        )
-                        task_entries += [{"task_type": "QC", **r} for r in rows]
-                    
-                    # Automation Tasks
-                    if automation_selected:
-                        rows, automation_completed, automation_hours, automation_batches = _render_task_entries(
-                            "Automation", batch_options, "automation", completed_max=100.0
-                        )
-                        task_entries += [{"task_type": "Automation", **r} for r in rows]
-                    
-                    # Other Tasks
-                    if other_selected:
-                        rows, other_completed, other_hours, other_batches = _render_task_entries(
-                            "Other", batch_options, "other", allow_empty_batch=True
-                        )
-                        task_entries += [{"task_type": "Other", **r} for r in rows]
-
             # Calculate total hours
             base_total = (spatial_hours + textual_hours + qa_hours + 
                          qc_hours + automation_hours + other_hours)
-            calculated_total = base_total
-            
+
             # Show hours summary only if tasks are selected
             if any([spatial_selected, textual_selected, qa_selected, qc_selected, automation_selected, other_selected]):
                 st.markdown("---")
@@ -521,11 +470,13 @@ def show_daily_task_entry():
                     min_value=0.0,
                     step=0.1,
                     format="%.2f",
-                    value=0.0
+                    value=0.0,
+                    key="overtime_hours_input",
+                    help="Use the Submit button below to save changes. Pressing Enter here will not submit the form."
                 )
                 calculated_total = base_total + overtime_hours
                 st.metric("Total Hours", f"{calculated_total:.2f} hours")
-            
+
             # Notes
             st.markdown("**Notes**")
             note = st.text_area(
@@ -533,30 +484,30 @@ def show_daily_task_entry():
                 placeholder="Add any relevant notes...",
                 height=100
             )
-            
+
             # Submit button
             st.markdown("---")
             submit_col1, submit_col2, submit_col3 = st.columns([1, 2, 1])
-            
+
             with submit_col2:
                 submitted = st.form_submit_button(
                     "Submit Task Report", 
                     use_container_width=True,
                     type="primary"
                 )
-            
+
             # Form validation and submission
             if submitted:
                 # Validate required fields
                 errors = []
                 if not user_name:
                     errors.append("Please select a user")
-                
+
                 # Check if at least one task type is selected
                 selected_tasks = [spatial_selected, textual_selected, qa_selected, qc_selected, automation_selected, other_selected]
                 if not any(selected_tasks):
                     errors.append("Please select at least one task type")
-                
+
                 # Validate selected task types have required rows
                 def _has_entries(task_type):
                     return any(e["task_type"] == task_type for e in task_entries)
@@ -576,7 +527,7 @@ def show_daily_task_entry():
 
                 if any(selected_tasks) and calculated_total < 7.5:
                     errors.append("Total hours must be at least 7.5")
-                
+
                 if errors:
                     for error in errors:
                         st.error(f"Error: {error}")
@@ -609,214 +560,25 @@ def show_daily_task_entry():
                             'note': note,
                             'submitted_by': user_name
                         }, task_entries)
-                        
+
                         st.success("Task report submitted successfully!")
                         st.cache_data.clear()
                         st.balloons()
-                            
+
                     except Exception as e:
                         st.error(f"Error submitting form: {str(e)}")
-    
-    with col_preview:
-        st.subheader("Today's Summary")
-        if "summary_loaded" not in st.session_state:
-            st.session_state.summary_loaded = False
 
-        if st.button("Load/Refresh Summary"):
-            st.session_state.summary_loaded = True
-
-        if not st.session_state.summary_loaded:
-            st.info("Click to load summary charts")
-            return
-        
-        # Show today's submission statistics
-        today_stats = get_today_submissions()
-        
-        if not today_stats.empty:
-            # Today's statistics cards
-            st.metric("Today's Submissions", len(today_stats))
-            
-            # Task type distribution
-            task_totals = {
-                'Spatial': today_stats['spatial_completed'].sum(),
-                'Textual': today_stats['textual_completed'].sum(),
-                'QA': today_stats['qa_completed'].sum(),
-                'QC': today_stats['qc_completed'].sum(),
-                'Automation': today_stats['automation_completed'].sum(),
-                'Other': today_stats['other_completed'].sum()
-            }
-            
-            # Filter out zero values for pie chart
-            non_zero_tasks = {k: v for k, v in task_totals.items() if v > 0}
-            
-            if non_zero_tasks:
-                fig = px.pie(
-                    values=list(non_zero_tasks.values()), 
-                    names=list(non_zero_tasks.keys()),
-                    title="Today's Task Types"
-                )
-                fig.update_traces(textposition='inside', textinfo='percent+label')
-                fig.update_layout(height=300, showlegend=False)
-                st.plotly_chart(fig, use_container_width=True)
-            
-            # Recent submissions
-            st.markdown("**Recent Submissions:**")
-            for _, row in today_stats.tail(3).iterrows():
-                try:
-                    submit_date = pd.to_datetime(row['submit_time']).strftime("%Y-%m-%d")
-                except Exception:
-                    submit_date = str(row['submit_time'])[:10]
-                st.write(f"• {row['user_names']} - {submit_date}")
-        else:
-            st.info("No submissions today yet")
-            
-            # Show weekly goal progress
-            st.markdown("**Weekly Goal Progress**")
-            weekly_goal = 50  # configurable
-            current_week_submissions = get_current_week_submissions()
-            progress = min(len(current_week_submissions) / weekly_goal, 1.0)
-            
-            st.progress(progress)
-            st.write(f"{len(current_week_submissions)}/{weekly_goal} submissions this week")
-
-def save_task_submission(data, task_entries):
-    """Save task submission data"""
-    conn = get_database_connection()
-    cursor = conn.cursor()
-    if db_adapter.is_postgres and not st.session_state.get("db_tables_ready", False):
-        db_adapter.create_tables()
-        st.session_state.db_tables_ready = True
-    placeholder = "%s" if db_adapter.is_postgres else "?"
-    values_placeholder = ", ".join([placeholder] * 24)
-    
-    insert_sql = f'''
-    INSERT INTO task_submissions 
-    (submission_date, user_names, 
-     spatial_completed, spatial_hours, spatial_batches,
-     textual_completed, textual_hours, textual_batches,
-     qa_completed, qa_hours, qa_batches,
-     qc_completed, qc_hours, qc_batches,
-     automation_completed, automation_hours, automation_batches,
-     other_completed, other_hours, other_batches,
-    overtime_hours, total_hours, note, submitted_by)
-    VALUES ({values_placeholder})
-    '''
-
-    if db_adapter.is_postgres:
-        insert_sql += " RETURNING id"
-
-    cursor.execute(insert_sql, (
-        data['submission_date'],
-        data['user_names'],
-        data['spatial_completed'],
-        data['spatial_hours'],
-        data['spatial_batches'],
-        data['textual_completed'],
-        data['textual_hours'],
-        data['textual_batches'],
-        data['qa_completed'],
-        data['qa_hours'],
-        data['qa_batches'],
-        data['qc_completed'],
-        data['qc_hours'],
-        data['qc_batches'],
-        data['automation_completed'],
-        data['automation_hours'],
-        data['automation_batches'],
-        data['other_completed'],
-        data['other_hours'],
-        data['other_batches'],
-        data['overtime_hours'],
-        data['total_hours'],
-        data['note'],
-        data['submitted_by']
-    ))
-
-    if db_adapter.is_postgres:
-        submission_id = cursor.fetchone()[0]
+# Ensure Add New User updates the user list
+@st.cache_data(ttl=600)
+def add_new_user(new_user):
+    """Add a new user to the user list and save to file."""
+    users = load_users_from_file()
+    if new_user not in users:
+        users.append(new_user)
+        save_users_to_file(users)
+        st.success(f"User '{new_user}' added successfully!")
     else:
-        submission_id = cursor.lastrowid
-
-    # Insert task entries (per batch)
-    entry_placeholder = "%s" if db_adapter.is_postgres else "?"
-    entry_values_placeholder = ", ".join([entry_placeholder] * 7)
-    entry_sql = f'''
-    INSERT INTO task_entries
-    (submission_id, submission_date, user_name, task_type, batch, completed, hours)
-    VALUES ({entry_values_placeholder})
-    '''
-
-    try:
-        for entry in task_entries:
-            cursor.execute(entry_sql, (
-                submission_id,
-                data['submission_date'],
-                data['user_names'],
-                entry['task_type'],
-                entry['batch'],
-                entry['completed'],
-                entry['hours']
-            ))
-    except Exception as e:
-        if db_adapter.is_postgres and "task_entries" in str(e):
-            db_adapter.create_tables()
-            st.session_state.db_tables_ready = True
-            for entry in task_entries:
-                cursor.execute(entry_sql, (
-                    submission_id,
-                    data['submission_date'],
-                    data['user_names'],
-                    entry['task_type'],
-                    entry['batch'],
-                    entry['completed'],
-                    entry['hours']
-                ))
-        else:
-            raise
-
-    conn.commit()
-    conn.close()
-
-@st.cache_data(ttl=60)
-def get_today_submissions():
-    """Get today's submission data"""
-    conn = get_database_connection()
-    today = date.today()
-    placeholder = "%s" if db_adapter.is_postgres else "?"
-    query = f'''
-    SELECT * FROM task_submissions 
-    WHERE submission_date = {placeholder} 
-    ORDER BY submit_time DESC
-    '''
-    try:
-        df = pd.read_sql_query(query, conn, params=[today])
-    except Exception:
-        df = pd.DataFrame()
-    finally:
-        conn.close()
-    return df
-
-@st.cache_data(ttl=120)
-def get_current_week_submissions():
-    """Get current week submission data"""
-    conn = get_database_connection()
-    # Get start of week (Monday)
-    today = date.today()
-    start_of_week = today - pd.Timedelta(days=today.weekday())
-    
-    placeholder = "%s" if db_adapter.is_postgres else "?"
-    query = f'''
-    SELECT * FROM task_submissions 
-    WHERE submission_date >= {placeholder} 
-    ORDER BY submit_time DESC
-    '''
-    try:
-        df = pd.read_sql_query(query, conn, params=[start_of_week])
-    except Exception:
-        df = pd.DataFrame()
-    finally:
-        conn.close()
-    return df
+        st.warning(f"User '{new_user}' already exists.")
 
 def show_performance_overview():
     """Performance overview page"""
@@ -1595,6 +1357,7 @@ def show_configuration():
                 if new_user and new_user not in current_users:
                     current_users.append(new_user)
                     if save_users_to_file(current_users):
+                        st.cache_data.clear()  # Clear cache to ensure updated user list is loaded
                         if st.session_state.get("is_admin", False):
                             upsert_team_member(new_user, (team_function or "").strip())
                         st.success(f"User '{new_user}' added successfully!")
