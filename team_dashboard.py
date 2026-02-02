@@ -343,14 +343,7 @@ def get_batch_options() -> List[str]:
     conn = get_database_connection()
     try:
         df = pd.read_sql_query("SELECT name FROM batch_options ORDER BY name", conn)
-        db_batches = df['name'].tolist() if not df.empty else []
-        merged = []
-        seen = set()
-        for b in DEFAULT_BATCH_OPTIONS + db_batches:
-            if b and b not in seen:
-                merged.append(b)
-                seen.add(b)
-        return merged if merged else DEFAULT_BATCH_OPTIONS
+        return df['name'].tolist() if not df.empty else []
     finally:
         conn.close()
 
