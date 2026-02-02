@@ -44,6 +44,7 @@ ADMIN_ACCESS_CODE = os.getenv("ADMIN_ACCESS_CODE", "PM_ADMIN")
 def load_users_from_file():
     """Load users from PM.xlsx or PM_users.txt file or default list"""
     try:
+        users = []
         # Prefer PM.xlsx if it exists
         if os.path.exists('PM.xlsx'):
             df = pd.read_excel('PM.xlsx')
@@ -55,21 +56,33 @@ def load_users_from_file():
                     user_col = col
                     break
             if user_col:
-                users = (
+                excel_users = (
                     df[user_col]
                     .dropna()
                     .astype(str)
                     .str.strip()
                     .tolist()
                 )
-                users = [u for u in users if u]
-                if users:
-                    return users
+                excel_users = [u for u in excel_users if u]
+                users.extend(excel_users)
 
         # Fallback to PM_users.txt
-        with open('PM_users.txt', 'r', encoding='utf-8') as f:
-            users = [line.strip() for line in f.readlines() if line.strip()]
-            return users if users else USER_LIST
+        try:
+            with open('PM_users.txt', 'r', encoding='utf-8') as f:
+                file_users = [line.strip() for line in f.readlines() if line.strip()]
+                users.extend(file_users)
+        except FileNotFoundError:
+            pass
+
+        # De-duplicate while preserving order
+        seen = set()
+        merged = []
+        for u in users:
+            if u and u not in seen:
+                merged.append(u)
+                seen.add(u)
+
+        return merged if merged else USER_LIST
     except FileNotFoundError:
         return USER_LIST
     except Exception:
@@ -81,6 +94,7 @@ def save_users_to_file(users):
         with open('PM_users.txt', 'w', encoding='utf-8') as f:
             for user in users:
                 f.write(f"{user}\n")
+        st.cache_data.clear()
         return True
     except Exception:
         return False
@@ -328,9 +342,14 @@ def get_batch_options() -> List[str]:
     conn = get_database_connection()
     try:
         df = pd.read_sql_query("SELECT name FROM batch_options ORDER BY name", conn)
-        if df.empty:
-            return DEFAULT_BATCH_OPTIONS
-        return df['name'].tolist()
+        db_batches = df['name'].tolist() if not df.empty else []
+        merged = []
+        seen = set()
+        for b in DEFAULT_BATCH_OPTIONS + db_batches:
+            if b and b not in seen:
+                merged.append(b)
+                seen.add(b)
+        return merged if merged else DEFAULT_BATCH_OPTIONS
     finally:
         conn.close()
 
@@ -457,6 +476,56 @@ def show_daily_task_entry():
         
         # Now create form with task details, summary, and submit
         with st.form("daily_task_form", clear_on_submit=False):
+            # Task details inside form to avoid reruns on each edit
+            if any([spatial_selected, textual_selected, qa_selected, qc_selected, automation_selected, other_selected]):
+                st.markdown("---")
+                st.markdown("**Task Details**")
+
+                details_container = st.container()
+
+                with details_container:
+                    # Spatial Tasks
+                    if spatial_selected:
+                        rows, spatial_completed, spatial_hours, spatial_batches = _render_task_entries(
+                            "Spatial", batch_options, "spatial"
+                        )
+                        task_entries += [{"task_type": "Spatial", **r} for r in rows]
+                    
+                    # Textual Tasks
+                    if textual_selected:
+                        rows, textual_completed, textual_hours, textual_batches = _render_task_entries(
+                            "Textual", batch_options, "textual"
+                        )
+                        task_entries += [{"task_type": "Textual", **r} for r in rows]
+                    
+                    # QA Tasks
+                    if qa_selected:
+                        rows, qa_completed, qa_hours, qa_batches = _render_task_entries(
+                            "QA", batch_options, "qa"
+                        )
+                        task_entries += [{"task_type": "QA", **r} for r in rows]
+                    
+                    # QC Tasks
+                    if qc_selected:
+                        rows, qc_completed, qc_hours, qc_batches = _render_task_entries(
+                            "QC", batch_options, "qc"
+                        )
+                        task_entries += [{"task_type": "QC", **r} for r in rows]
+                    
+                    # Automation Tasks
+                    if automation_selected:
+                        rows, automation_completed, automation_hours, automation_batches = _render_task_entries(
+                            "Automation", batch_options, "automation", completed_max=100.0
+                        )
+                        task_entries += [{"task_type": "Automation", **r} for r in rows]
+                    
+                    # Other Tasks
+                    if other_selected:
+                        rows, other_completed, other_hours, other_batches = _render_task_entries(
+                            "Other", batch_options, "other", allow_empty_batch=True
+                        )
+                        task_entries += [{"task_type": "Other", **r} for r in rows]
+
             # Calculate total hours
             base_total = (spatial_hours + textual_hours + qa_hours + 
                          qc_hours + automation_hours + other_hours)
