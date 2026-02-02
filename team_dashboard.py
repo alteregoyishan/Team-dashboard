@@ -462,6 +462,8 @@ def show_daily_task_entry():
         automation_completed = automation_hours = 0
         other_completed = other_hours = 0
         overtime_hours = 0.0
+        base_total = 0.0
+        calculated_total = 0.0
 
         spatial_batches = textual_batches = qa_batches = []
         qc_batches = automation_batches = other_batches = []
@@ -587,6 +589,10 @@ def show_daily_task_entry():
                     errors.append("Automation task requires at least one valid row")
                 if other_selected and not _has_entries("Other"):
                     errors.append("Other task requires at least one valid row")
+
+                # Recalculate to ensure overtime is included
+                calculated_total = (spatial_hours + textual_hours + qa_hours + 
+                                    qc_hours + automation_hours + other_hours) + float(overtime_hours or 0.0)
 
                 if any(selected_tasks) and calculated_total < 7.5:
                     errors.append("Total hours must be at least 7.5")
