@@ -520,9 +520,13 @@ def show_daily_task_entry():
                     )
                     task_entries += [{"task_type": "Other", **r} for r in rows]
 
-            # Hours summary outside form to avoid Enter triggering submit
-            st.markdown("---")
-            st.markdown("**Hours Summary**")
+            # Calculate total hours (exclude overtime)
+            base_total = (spatial_hours + textual_hours + qa_hours + 
+                         qc_hours + automation_hours + other_hours)
+            calculated_total = base_total
+            st.metric("Total Hours", f"{calculated_total:.2f} hours")
+
+            # Over time hours after total hours (not included in total)
             overtime_hours = st.number_input(
                 "Over Time Hours (optional)",
                 min_value=0.0,
@@ -532,12 +536,6 @@ def show_daily_task_entry():
                 key="overtime_hours_input",
                 help="Use the Submit button below to save changes."
             )
-
-            # Calculate total hours
-            base_total = (spatial_hours + textual_hours + qa_hours + 
-                         qc_hours + automation_hours + other_hours)
-            calculated_total = base_total + float(overtime_hours or 0.0)
-            st.metric("Total Hours", f"{calculated_total:.2f} hours")
 
         # Now create form with notes and submit
         with st.form("daily_task_form", clear_on_submit=False):
@@ -590,12 +588,12 @@ def show_daily_task_entry():
                 if other_selected and not _has_entries("Other"):
                     errors.append("Other task requires at least one valid row")
 
-                # Recalculate to ensure overtime is included
+                # Recalculate to ensure total hours exclude overtime
                 calculated_total = (spatial_hours + textual_hours + qa_hours + 
-                                    qc_hours + automation_hours + other_hours) + float(overtime_hours or 0.0)
+                                    qc_hours + automation_hours + other_hours)
 
-                if any(selected_tasks) and calculated_total < 7.5:
-                    errors.append("Total hours must be at least 7.5")
+                if any(selected_tasks) and calculated_total > 8:
+                    errors.append("Total hours must be 8 or less")
 
                 if errors:
                     for error in errors:
