@@ -585,8 +585,7 @@ def show_daily_task_entry():
                     errors.append("QC task requires at least one valid row")
                 if automation_selected and not _has_entries("Automation"):
                     errors.append("Automation task requires at least one valid row")
-                if other_selected and not _has_entries("Other"):
-                    errors.append("Other task requires at least one valid row")
+                # Other tasks can be selected without entries
 
                 # Recalculate to ensure total hours exclude overtime
                 calculated_total = (spatial_hours + textual_hours + qa_hours + 
@@ -1068,11 +1067,19 @@ def show_data_management():
                         
                         new_date = st.date_input("Date", value=pd.to_datetime(record['submission_date']).date())
                         new_note = st.text_area("Note", value=record['note'] or "")
+                        confirm_delete = st.checkbox("Confirm delete this record")
                         
                         if st.form_submit_button("Update Record"):
                             update_record(selected_id, new_date, new_note)
                             st.success("Record updated successfully!")
                             st.rerun()
+                        if st.form_submit_button("Delete Record"):
+                            if confirm_delete:
+                                delete_record(selected_id)
+                                st.success("Record deleted successfully!")
+                                st.rerun()
+                            else:
+                                st.error("Please confirm deletion before proceeding")
             else:
                 st.info("No records to edit")
 
@@ -1183,6 +1190,20 @@ def update_record(record_id, new_date, new_note):
         )
     conn.commit()
     conn.close()
+
+def delete_record(record_id: int):
+    """Delete a specific record and its task entries"""
+    conn = get_database_connection()
+    cursor = conn.cursor()
+    if db_adapter.is_postgres:
+        cursor.execute("DELETE FROM task_entries WHERE submission_id = %s", (record_id,))
+        cursor.execute("DELETE FROM task_submissions WHERE id = %s", (record_id,))
+    else:
+        cursor.execute("DELETE FROM task_entries WHERE submission_id = ?", (record_id,))
+        cursor.execute("DELETE FROM task_submissions WHERE id = ?", (record_id,))
+    conn.commit()
+    conn.close()
+    st.cache_data.clear()
 
 def delete_old_records(days):
     """Delete old records"""
@@ -1506,10 +1527,10 @@ def show_configuration():
                 st.rerun()
         
         st.markdown("---")
-        st.markdown("**Add New User:**")
-        with st.form("add_user_form"):
-            new_user = st.text_input("User Name")
-            if st.session_state.get("is_admin", False):
+        st.markdown("**Add New User (Admin Only):**")
+        if st.session_state.get("is_admin", False):
+            with st.form("add_user_form"):
+                new_user = st.text_input("User Name")
                 existing_teams = sorted({v for v in team_map.values() if v})
                 team_function = st.selectbox(
                     "Team Function",
@@ -1518,31 +1539,35 @@ def show_configuration():
                 )
                 if team_function == "":
                     team_function = st.text_input("Or enter new Team Function")
-            if st.form_submit_button("Add User"):
-                if new_user and new_user not in current_users:
-                    current_users.append(new_user)
-                    if save_users_to_file(current_users):
-                        st.cache_data.clear()  # Clear cache to ensure updated user list is loaded
-                        if st.session_state.get("is_admin", False):
+                if st.form_submit_button("Add User"):
+                    if new_user and new_user not in current_users:
+                        current_users.append(new_user)
+                        if save_users_to_file(current_users):
+                            st.cache_data.clear()  # Clear cache to ensure updated user list is loaded
                             upsert_team_member(new_user, (team_function or "").strip())
-                        st.success(f"User '{new_user}' added successfully!")
-                        st.rerun()
+                            st.success(f"User '{new_user}' added successfully!")
+                            st.rerun()
+                        else:
+                            st.error("Failed to save user list")
                     else:
-                        st.error("Failed to save user list")
-                else:
-                    st.error("User name already exists or is empty")
+                        st.error("User name already exists or is empty")
+        else:
+            st.info("Admin access required to add users")
         
-        st.markdown("**Remove User:**")
-        if current_users:
-            with st.form("remove_user_form"):
-                user_to_remove = st.selectbox("Select user to remove", current_users)
-                if st.form_submit_button("Remove User"):
-                    current_users.remove(user_to_remove)
-                    if save_users_to_file(current_users):
-                        st.success(f"User '{user_to_remove}' removed successfully!")
-                        st.rerun()
-                    else:
-                        st.error("Failed to save user list")
+        st.markdown("**Remove User (Admin Only):**")
+        if st.session_state.get("is_admin", False):
+            if current_users:
+                with st.form("remove_user_form"):
+                    user_to_remove = st.selectbox("Select user to remove", current_users)
+                    if st.form_submit_button("Remove User"):
+                        current_users.remove(user_to_remove)
+                        if save_users_to_file(current_users):
+                            st.success(f"User '{user_to_remove}' removed successfully!")
+                            st.rerun()
+                        else:
+                            st.error("Failed to save user list")
+        else:
+            st.info("Admin access required to remove users")
 
         st.markdown("---")
         st.markdown("**Edit Team Function (Admin Only):**")
@@ -1598,7 +1623,6 @@ def show_configuration():
                 st.write(f"Date Range: {df['submission_date'].min()} to {df['submission_date'].max()}")
                 
                 # Calculate database size
-                import os
                 if os.path.exists('team_dashboard.db'):
                     size_bytes = os.path.getsize('team_dashboard.db')
                     size_mb = size_bytes / (1024 * 1024)

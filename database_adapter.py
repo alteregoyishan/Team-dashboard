@@ -25,10 +25,15 @@ except ImportError:
 
 class DatabaseAdapter:
     def __init__(self):
-        if STREAMLIT_AVAILABLE and "DATABASE_URL" in st.secrets:
-            self.db_url = st.secrets["DATABASE_URL"]
-        else:
-            self.db_url = os.getenv("DATABASE_URL")                                 
+        self.db_url = None
+        if STREAMLIT_AVAILABLE:
+            try:
+                if "DATABASE_URL" in st.secrets:
+                    self.db_url = st.secrets["DATABASE_URL"]
+            except Exception:
+                self.db_url = None
+        if not self.db_url:
+            self.db_url = os.getenv("DATABASE_URL")
         self.is_postgres = bool(self.db_url and POSTGRES_AVAILABLE)
         
     def get_connection(self):
@@ -242,7 +247,7 @@ class DatabaseAdapter:
         
         # Insert default settings
         if self.is_postgres:
-            self.execute_sql(
+            self.execute_sql(      
                 "INSERT INTO app_settings (id, spatial_target, textual_target) VALUES (1, 0, 0) ON CONFLICT (id) DO NOTHING"
             )
         else:
