@@ -205,3 +205,10 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# User passwords and sensitive data (Dashboard specific)
+user_passwords.json
+user_tokens.json
+*.db
+team_dashboard.db
+.streamlit/secrets.toml

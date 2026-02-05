@@ -26,15 +26,35 @@ except ImportError:
 class DatabaseAdapter:
     def __init__(self):
         self.db_url = None
+        
+        # Try to get DATABASE_URL from Streamlit secrets (if available)
         if STREAMLIT_AVAILABLE:
             try:
                 if "DATABASE_URL" in st.secrets:
                     self.db_url = st.secrets["DATABASE_URL"]
             except Exception:
-                self.db_url = None
+                # Secrets file doesn't exist or can't be read, continue without it
+                pass
+        
+        # Fallback to environment variable
         if not self.db_url:
             self.db_url = os.getenv("DATABASE_URL")
-        self.is_postgres = bool(self.db_url and POSTGRES_AVAILABLE)
+        
+        # Test actual connection to determine database type
+        self.is_postgres = False
+        if self.db_url and POSTGRES_AVAILABLE:
+            try:
+                # Try to connect to verify PostgreSQL is actually available
+                test_conn = psycopg2.connect(
+                    self.db_url,
+                    connect_timeout=5,
+                    sslmode='require'
+                )
+                test_conn.close()
+                self.is_postgres = True
+            except Exception:
+                # Connection failed, will use SQLite fallback
+                self.is_postgres = False
         
     def get_connection(self):
         """Get database connection based on environment"""

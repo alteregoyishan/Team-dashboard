@@ -3,11 +3,13 @@ import os
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import sqlite3
 import json
-from typing import List, Dict
+from typing import List, Dict, Optional
 import io
+import hashlib
+import secrets
 
 # Import database adapter for cloud compatibility
 try:
@@ -18,7 +20,7 @@ except ImportError:
 
 # Page configuration
 st.set_page_config(
-    page_title="Team Performance Dashboard",
+    page_title="RMSI Daily Task Performance",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -40,9 +42,136 @@ DEFAULT_BATCH_OPTIONS = [
 # Admin access code (set ADMIN_ACCESS_CODE env var to override)
 ADMIN_ACCESS_CODE = os.getenv("ADMIN_ACCESS_CODE", "PM_ADMIN")
 
+PASSWORD_OVERRIDES_FILE = "user_passwords.json"
+
+def _normalize_value(value: Optional[str]) -> str:
+    return str(value or "").strip()
+
+def _find_column(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
+    lower_map = {str(col).strip().lower(): col for col in df.columns}
+    for candidate in candidates:
+        key = candidate.strip().lower()
+        if key in lower_map:
+            return lower_map[key]
+    return None
+
+@st.cache_data(ttl=600)
+def load_employee_code_mapping() -> Dict[str, str]:
+    """Load employee codes from PM file (PM.xlsx or PM_team.*)."""
+    if os.path.exists('PM.xlsx'):
+        df = pd.read_excel('PM.xlsx')
+    elif os.path.exists('PM_team.xlsx'):
+        df = pd.read_excel('PM_team.xlsx')
+    elif os.path.exists('PM_team.csv'):
+        df = pd.read_csv('PM_team.csv')
+    else:
+        return {}
+
+    name_col = _find_column(df, ["name", "user name", "user", "pm", "pm name"])
+    code_col = _find_column(df, ["employee code", "employee_code", "emp code", "emp_code", "code"])
+
+    if not name_col or not code_col:
+        return {}
+
+    mapping = {}
+    for _, row in df.iterrows():
+        name = _normalize_value(row.get(name_col))
+        code = _normalize_value(row.get(code_col))
+        if name and code:
+            mapping[name] = code
+    return mapping
+
+def load_password_overrides() -> Dict:
+    """Load password overrides from JSON file."""
+    if os.path.exists(PASSWORD_OVERRIDES_FILE):
+        try:
+            with open(PASSWORD_OVERRIDES_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def save_password_overrides(overrides: Dict) -> bool:
+    """Save password overrides to JSON file."""
+    try:
+        with open(PASSWORD_OVERRIDES_FILE, 'w', encoding='utf-8') as f:
+            json.dump(overrides, f, indent=2, ensure_ascii=False)
+        return True
+    except Exception:
+        return False
+
+def _hash_password(password: str, salt: str) -> str:
+    return hashlib.sha256(f"{salt}{password}".encode("utf-8")).hexdigest()
+
+def set_user_password(user_name: str, new_password: str) -> bool:
+    overrides = load_password_overrides()
+    salt = secrets.token_hex(16)
+    overrides[user_name] = {
+        "salt": salt,
+        "password_hash": _hash_password(new_password, salt),
+        "updated_at": datetime.now().isoformat()
+    }
+    return save_password_overrides(overrides)
+
+def clear_user_password(user_name: str) -> bool:
+    overrides = load_password_overrides()
+    if user_name in overrides:
+        overrides.pop(user_name, None)
+        return save_password_overrides(overrides)
+    return True
+
+def verify_user_password(user_name: str, password: str) -> bool:
+    """Verify password. Override takes priority over employee code."""
+    overrides = load_password_overrides()
+    if user_name in overrides:
+        info = overrides[user_name]
+        return _hash_password(password, info["salt"]) == info["password_hash"]
+
+    mapping = load_employee_code_mapping()
+    return _normalize_value(mapping.get(user_name)) == _normalize_value(password)
+
+def authenticate_by_password(password: str) -> Optional[str]:
+    """Authenticate by password. Check overrides first, then employee codes."""
+    if not password:
+        return None
+
+    # First check overrides (custom passwords)
+    overrides = load_password_overrides()
+    for user_name, info in overrides.items():
+        if _hash_password(password, info["salt"]) == info["password_hash"]:
+            return user_name
+
+    # Then check employee codes (only if no override)
+    mapping = load_employee_code_mapping()
+    for user_name, code in mapping.items():
+        # Skip if user has custom password
+        if user_name in overrides:
+            continue
+        if _normalize_value(code) == _normalize_value(password):
+            return user_name
+    return None
+
+@st.cache_data(ttl=300)
+def get_all_available_users() -> Dict[str, str]:
+    """Get all available users from both PM.xlsx and PM_users.txt"""
+    all_users = {}
+    
+    # First, load from PM.xlsx (Employee Code mapping)
+    all_users.update(load_employee_code_mapping())
+    
+    # Then, load from PM_users.txt (UI-added users with password overrides)
+    pm_users = load_users_from_file()
+    overrides = load_password_overrides()
+    for user in pm_users:
+        if user not in all_users:
+            # Only show UI-added users if they have a password set
+            if user in overrides:
+                all_users[user] = user
+    
+    return all_users
+
 @st.cache_data(ttl=600)
 def load_users_from_file():
-    """Load users from PM.xlsx or PM_users.txt file or default list"""
     try:
         users = []
         # Prefer PM.xlsx if it exists
@@ -126,6 +255,23 @@ def _normalize_task_rows(rows, allow_empty_batch: bool = False):
             })
     return normalized
 
+def _calculate_row_totals(rows):
+    """Calculate totals from raw editor rows (no validation filters)."""
+    total_completed = 0.0
+    total_hours = 0.0
+    for row in rows:
+        try:
+            completed = float(row.get("completed", 0) or 0)
+        except Exception:
+            completed = 0.0
+        try:
+            hours = float(row.get("hours", 0) or 0)
+        except Exception:
+            hours = 0.0
+        total_completed += completed
+        total_hours += hours
+    return total_completed, total_hours
+
 def _render_task_entries(task_label, batch_options, key_prefix, allow_empty_batch: bool = False, completed_max=None):
     """Render task entry rows and return normalized rows, totals, batches."""
     st.markdown(f"**{task_label} Tasks**")
@@ -173,8 +319,7 @@ def _render_task_entries(task_label, batch_options, key_prefix, allow_empty_batc
         rows = edited
         st.session_state[state_key] = rows
     normalized = _normalize_task_rows(rows, allow_empty_batch=allow_empty_batch)
-    total_completed = sum(r["completed"] for r in normalized)
-    total_hours = sum(r["hours"] for r in normalized)
+    total_completed, total_hours = _calculate_row_totals(rows)
     batches = [r["batch"] for r in normalized]
     return normalized, total_completed, total_hours, batches
 
@@ -383,24 +528,93 @@ def main():
         except Exception as e:
             st.error(f"Database initialization error: {e}")
     
-    # Sidebar navigation
-    st.sidebar.title("Navigation")
-
-    if "is_admin" not in st.session_state:
+    # Password authentication
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+        st.session_state.current_user = None
         st.session_state.is_admin = False
 
-    with st.sidebar.expander("Admin Access", expanded=False):
-        access_code = st.text_input("Access Code", type="password")
-        if access_code:
-            st.session_state.is_admin = (access_code == ADMIN_ACCESS_CODE)
-        if st.session_state.is_admin:
-            st.success("Admin access enabled")
-        else:
-            st.info("Admin access required for data editing")
+    if not st.session_state.authenticated:
+        st.title("RMSI Daily Task Performance")
+        st.subheader("Sign In")
 
+        # Check if admin mode checkbox is checked
+        admin_mode = st.checkbox("Admin login")
+        
+        # Get all available users (from both PM.xlsx and PM_users.txt)
+        all_users = get_all_available_users()
+        if not all_users:
+            st.warning("No users found. Please update PM.xlsx with an Employee Code column.")
+            st.stop()
+
+        if admin_mode:
+            # Admin login - only password
+            with st.form("admin_login_form"):
+                password = st.text_input("Admin Password", type="password")
+                submitted = st.form_submit_button("Sign In as Admin")
+            
+            if submitted:
+                if password == ADMIN_ACCESS_CODE:
+                    st.session_state.authenticated = True
+                    st.session_state.current_user = "Admin"
+                    st.session_state.is_admin = True
+                    st.rerun()
+                else:
+                    st.error("Invalid admin password")
+        else:
+            # Regular user login
+            with st.form("user_login_form"):
+                user_name = st.selectbox("Select Your Name", options=sorted(all_users.keys()))
+                password = st.text_input("Password", type="password")
+                submitted = st.form_submit_button("Sign In")
+            
+            if submitted:
+                if verify_user_password(user_name, password):
+                    st.session_state.authenticated = True
+                    st.session_state.current_user = user_name
+                    st.session_state.is_admin = False
+                    st.rerun()
+                else:
+                    st.error("Invalid password")
+
+        st.stop()
+
+    # Sidebar navigation
+    st.sidebar.title("Navigation")
+    st.sidebar.info(f"👤 Logged in as: **{st.session_state.current_user}**")
+    if st.session_state.is_admin:
+        st.sidebar.success("🔑 Admin Access")
+
+    with st.sidebar.expander("Change Password", expanded=False):
+        if st.session_state.is_admin:
+            st.info("Admin password is managed via ADMIN_ACCESS_CODE.")
+        else:
+            with st.form("change_password_form"):
+                current_pw = st.text_input("Current Password", type="password")
+                new_pw = st.text_input("New Password", type="password")
+                confirm_pw = st.text_input("Confirm New Password", type="password")
+                if st.form_submit_button("Update Password"):
+                    if not new_pw:
+                        st.error("New password cannot be empty")
+                    elif new_pw != confirm_pw:
+                        st.error("New passwords do not match")
+                    elif not verify_user_password(st.session_state.current_user, current_pw):
+                        st.error("Current password is incorrect")
+                    else:
+                        if set_user_password(st.session_state.current_user, new_pw):
+                            st.success("Password updated successfully")
+                        else:
+                            st.error("Failed to update password")
+
+    # Admin can see Data Management and Configuration, regular users only see Daily Task Entry
+    if st.session_state.is_admin:
+        page_options = ["Data Management", "Configuration"]
+    else:
+        page_options = ["Daily Task Entry"]
+    
     page = st.sidebar.radio(
         "Select Page",
-        ["Daily Task Entry", "Data Management", "Configuration"],
+        page_options,
         index=0
     )
     
@@ -429,12 +643,9 @@ def show_daily_task_entry():
             help="Select the date for task execution"
         )
         
-        # User name selection
-        user_name = st.selectbox(
-            "User Name *",
-            options=current_users,
-            help="Select the team member"
-        )
+        # Use current authenticated user
+        user_name = st.session_state.current_user
+        st.info(f"Submitting as: **{user_name}**")
         
         st.markdown("---")
         st.markdown("**Task Type Selection**")
@@ -1501,12 +1712,17 @@ def show_configuration():
     """Configuration page for updating users and batches"""
     st.header("Configuration")
     
+    if not st.session_state.get("is_admin", False):
+        st.warning("Admin access required to view configuration.")
+        st.stop()
+    
     tab1, tab2, tab3 = st.tabs(["User Management", "Batch Management", "System Settings"])
     
     with tab1:
         st.subheader("User Management")
         
         current_users = load_users_from_file()
+        employee_codes = load_employee_code_mapping()
         team_df = get_team_members()
         team_map = {}
         if not team_df.empty:
@@ -1528,9 +1744,11 @@ def show_configuration():
         
         st.markdown("---")
         st.markdown("**Add New User (Admin Only):**")
+        
         if st.session_state.get("is_admin", False):
             with st.form("add_user_form"):
                 new_user = st.text_input("User Name")
+                new_employee_code = st.text_input("Employee Code (will be default password)")
                 existing_teams = sorted({v for v in team_map.values() if v})
                 team_function = st.selectbox(
                     "Team Function",
@@ -1540,20 +1758,23 @@ def show_configuration():
                 if team_function == "":
                     team_function = st.text_input("Or enter new Team Function")
                 if st.form_submit_button("Add User"):
-                    if new_user and new_user not in current_users:
+                    if new_user and new_employee_code and new_user not in current_users:
                         current_users.append(new_user)
                         if save_users_to_file(current_users):
-                            st.cache_data.clear()  # Clear cache to ensure updated user list is loaded
+                            st.cache_data.clear()
+                            # Set password to Employee Code
+                            set_user_password(new_user, new_employee_code)
                             upsert_team_member(new_user, (team_function or "").strip())
-                            st.success(f"User '{new_user}' added successfully!")
+                            st.success(f"User '{new_user}' added successfully! Password set to Employee Code.")
                             st.rerun()
                         else:
                             st.error("Failed to save user list")
                     else:
-                        st.error("User name already exists or is empty")
+                        st.error("User name, Employee Code are required, and user must not already exist")
         else:
             st.info("Admin access required to add users")
         
+        st.markdown("---")
         st.markdown("**Remove User (Admin Only):**")
         if st.session_state.get("is_admin", False):
             if current_users:
@@ -1583,6 +1804,21 @@ def show_configuration():
                         st.rerun()
         else:
             st.info("Admin access required to edit team functions")
+
+        st.markdown("---")
+        st.markdown("**Reset User Password (Admin Only):**")
+        if st.session_state.get("is_admin", False):
+            if current_users:
+                with st.form("reset_password_form"):
+                    user_to_reset = st.selectbox("User", current_users, key="reset_user_select")
+                    if st.form_submit_button("Reset to Employee Code"):
+                        if clear_user_password(user_to_reset):
+                            st.success(f"Password reset for {user_to_reset}. They can log in with their Employee Code.")
+                            st.rerun()
+                        else:
+                            st.error("Failed to reset password")
+        else:
+            st.info("Admin access required to reset passwords")
     
     with tab2:
         st.subheader("Batch Management")
@@ -1634,10 +1870,16 @@ def show_configuration():
         st.markdown("---")
         st.markdown("**File Locations:**")
         st.write("- Application: team_dashboard.py")
+        
+        # Check if DATABASE_URL is configured
+        db_url = os.getenv("DATABASE_URL")
         if db_adapter.is_postgres:
-            st.write("- Database: Supabase (cloud)")
+            st.write("- Database: **Supabase (cloud)**")
+        elif db_url:
+            st.write(f"- Database: DATABASE_URL is set but PostgreSQL not available (psycopg2 not installed). Using SQLite fallback.")
         else:
-            st.write("- Database: team_dashboard.db")
+            st.write("- Database: **team_dashboard.db** (local SQLite)")
+        
         if os.path.exists('PM.xlsx'):
             st.write("- User List: PM.xlsx")
         else:
