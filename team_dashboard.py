@@ -595,8 +595,9 @@ def main():
                     st.error("Invalid admin password")
         else:
             # Regular user login
+            mapping = load_employee_code_mapping()
             with st.form("user_login_form"):
-                user_name = st.selectbox("Select Your Name", options=sorted(all_users.keys()))
+                user_name = st.selectbox("Select Your Name", options=sorted(mapping.keys()))
                 password = st.text_input("Password", type="password")
                 submitted = st.form_submit_button("Sign In")
             
