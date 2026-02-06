@@ -193,6 +193,19 @@ class DatabaseAdapter:
                         REFERENCES task_submissions(id)
                         ON DELETE CASCADE
                 )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS user_passwords (
+                    id SERIAL PRIMARY KEY,
+                    user_name TEXT NOT NULL UNIQUE,
+                    salt TEXT NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """,
+                """
+                CREATE INDEX IF NOT EXISTS idx_user_passwords_name ON user_passwords(user_name)
                 """
             ]
         else:
@@ -258,6 +271,19 @@ class DatabaseAdapter:
                     hours REAL DEFAULT 0.0,
                     FOREIGN KEY(submission_id) REFERENCES task_submissions(id) ON DELETE CASCADE
                 )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS user_passwords (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_name TEXT NOT NULL UNIQUE,
+                    salt TEXT NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """,
+                """
+                CREATE INDEX IF NOT EXISTS idx_user_passwords_name ON user_passwords(user_name)
                 """
             ]
         

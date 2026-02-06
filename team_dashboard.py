@@ -42,8 +42,6 @@ DEFAULT_BATCH_OPTIONS = [
 # Admin access code (set ADMIN_ACCESS_CODE env var to override)
 ADMIN_ACCESS_CODE = os.getenv("ADMIN_ACCESS_CODE", "PM_ADMIN")
 
-PASSWORD_OVERRIDES_FILE = "user_passwords.json"
-
 def _normalize_value(value: Optional[str]) -> str:
     return str(value or "").strip()
 
@@ -82,93 +80,128 @@ def load_employee_code_mapping() -> Dict[str, str]:
     return mapping
 
 def load_password_overrides() -> Dict:
-    """Load password overrides from JSON file."""
-    if os.path.exists(PASSWORD_OVERRIDES_FILE):
-        try:
-            with open(PASSWORD_OVERRIDES_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    return {}
+    """Load password overrides from Supabase database."""
+    if not USE_CLOUD_DB:
+        return {}
+    
+    try:
+        conn = get_database_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT user_name, salt, password_hash FROM user_passwords")
+        results = cursor.fetchall()
+        conn.close()
+        
+        overrides = {}
+        for user_name, salt, password_hash in results:
+            overrides[user_name] = {
+                "salt": salt,
+                "password_hash": password_hash
+            }
+        return overrides
+    except Exception:
+        return {}
 
 def save_password_overrides(overrides: Dict) -> bool:
-    """Save password overrides to JSON file."""
-    try:
-        with open(PASSWORD_OVERRIDES_FILE, 'w', encoding='utf-8') as f:
-            json.dump(overrides, f, indent=2, ensure_ascii=False)
-        return True
-    except Exception:
-        return False
+    """This function is deprecated. Use set_user_password() instead."""
+    return True
 
 def _hash_password(password: str, salt: str) -> str:
     return hashlib.sha256(f"{salt}{password}".encode("utf-8")).hexdigest()
 
 def set_user_password(user_name: str, new_password: str) -> bool:
-    overrides = load_password_overrides()
-    salt = secrets.token_hex(16)
-    overrides[user_name] = {
-        "salt": salt,
-        "password_hash": _hash_password(new_password, salt),
-        "updated_at": datetime.now().isoformat()
-    }
-    return save_password_overrides(overrides)
+    """Set user password in Supabase database."""
+    if not USE_CLOUD_DB:
+        st.warning("⚠️ Cloud database required for password management.")
+        return False
+    
+    try:
+        conn = get_database_connection()
+        cursor = conn.cursor()
+        salt = secrets.token_hex(16)
+        password_hash = _hash_password(new_password, salt)
+        
+        # Upsert password using PostgreSQL
+        cursor.execute("""
+            INSERT INTO user_passwords (user_name, salt, password_hash, updated_at, created_at)
+            VALUES (%s, %s, %s, NOW(), NOW())
+            ON CONFLICT (user_name) DO UPDATE
+            SET salt = EXCLUDED.salt, password_hash = EXCLUDED.password_hash, updated_at = NOW()
+        """, (user_name, salt, password_hash))
+        
+        conn.commit()
+        conn.close()
+        st.cache_data.clear()
+        return True
+    except Exception as e:
+        st.error(f"Failed to set password: {e}")
+        return False
 
 def clear_user_password(user_name: str) -> bool:
-    overrides = load_password_overrides()
-    if user_name in overrides:
-        overrides.pop(user_name, None)
-        return save_password_overrides(overrides)
-    return True
+    """Clear user password (reset to Employee Code) in Supabase."""
+    if not USE_CLOUD_DB:
+        return True
+    
+    try:
+        conn = get_database_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM user_passwords WHERE user_name = %s", (user_name,))
+        conn.commit()
+        conn.close()
+        st.cache_data.clear()
+        return True
+    except Exception as e:
+        st.error(f"Failed to clear password: {e}")
+        return False
 
 def verify_user_password(user_name: str, password: str) -> bool:
-    """Verify password. Override takes priority over employee code."""
-    overrides = load_password_overrides()
-    if user_name in overrides:
-        info = overrides[user_name]
-        return _hash_password(password, info["salt"]) == info["password_hash"]
-
+    """Verify user password against Supabase database or Employee Code."""
+    if USE_CLOUD_DB:
+        try:
+            conn = get_database_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT salt, password_hash FROM user_passwords WHERE user_name = %s",
+                (user_name,)
+            )
+            result = cursor.fetchone()
+            conn.close()
+            
+            if result:
+                salt, password_hash = result
+                return _hash_password(password, salt) == password_hash
+        except Exception:
+            pass
+    
+    # Fallback to Employee Code
     mapping = load_employee_code_mapping()
     return _normalize_value(mapping.get(user_name)) == _normalize_value(password)
 
 def authenticate_by_password(password: str) -> Optional[str]:
-    """Authenticate by password. Check overrides first, then employee codes."""
+    """Authenticate user by password or Employee Code."""
     if not password:
         return None
 
-    # First check overrides (custom passwords)
-    overrides = load_password_overrides()
-    for user_name, info in overrides.items():
-        if _hash_password(password, info["salt"]) == info["password_hash"]:
-            return user_name
-
-    # Then check employee codes (only if no override)
+    # First check custom passwords in database
+    if USE_CLOUD_DB:
+        try:
+            conn = get_database_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT user_name, salt, password_hash FROM user_passwords")
+            results = cursor.fetchall()
+            conn.close()
+            
+            for user_name, salt, password_hash in results:
+                if _hash_password(password, salt) == password_hash:
+                    return user_name
+        except Exception:
+            pass
+    
+    # Fallback to Employee Code mapping
     mapping = load_employee_code_mapping()
     for user_name, code in mapping.items():
-        # Skip if user has custom password
-        if user_name in overrides:
-            continue
         if _normalize_value(code) == _normalize_value(password):
             return user_name
     return None
-
-@st.cache_data(ttl=300)
-def get_all_available_users() -> Dict[str, str]:
-    """Get all available users from both PM.xlsx and PM_users.txt"""
-    all_users = {}
-    
-    # First, load from PM.xlsx (Employee Code mapping)
-    all_users.update(load_employee_code_mapping())
-    
-    # Then, load from PM_users.txt (UI-added users with password overrides)
-    pm_users = load_users_from_file()
-    overrides = load_password_overrides()
-    for user in pm_users:
-        if user not in all_users:
-            # Only show UI-added users if they have a password set
-            if user in overrides:
-                all_users[user] = user
-    
-    return all_users
 
 @st.cache_data(ttl=600)
 def load_users_from_file():
@@ -431,21 +464,20 @@ def load_team_mapping_file():
     else:
         return pd.DataFrame()
 
-    df = df.rename(columns={
-        'name': 'name',
-        'Name': 'name',
-        'TEAM FUNCTION': 'team_function',
-        'Team Function': 'team_function',
-        'team function': 'team_function'
-    })
+    # Use flexible column matching
+    name_col = _find_column(df, ["name", "user name", "user", "pm", "pm name"])
+    team_col = _find_column(df, ["team function", "team_function", "function", "role", "department"])
 
-    required_cols = {'name', 'team_function'}
-    if not required_cols.issubset(set(df.columns)):
+    if not name_col or not team_col:
         return pd.DataFrame()
 
-    df['name'] = df['name'].astype(str).str.strip()
-    df['team_function'] = df['team_function'].astype(str).str.strip()
-    return df
+    # Create clean dataframe with standard columns
+    result_df = pd.DataFrame({
+        'name': df[name_col].astype(str).str.strip(),
+        'team_function': df[team_col].astype(str).str.strip()
+    })
+    
+    return result_df
 
 def get_team_members():
     """Get team members from DB, fallback to file and seed DB"""
@@ -541,10 +573,10 @@ def main():
         # Check if admin mode checkbox is checked
         admin_mode = st.checkbox("Admin login")
         
-        # Get all available users (from both PM.xlsx and PM_users.txt)
-        all_users = get_all_available_users()
-        if not all_users:
-            st.warning("No users found. Please update PM.xlsx with an Employee Code column.")
+        # Check if employee code mapping is available
+        mapping = load_employee_code_mapping()
+        if not admin_mode and not mapping:
+            st.warning("No Employee Codes found. Please update PM.xlsx with an Employee Code column.")
             st.stop()
 
         if admin_mode:
