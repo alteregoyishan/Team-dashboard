@@ -79,6 +79,148 @@ def load_employee_code_mapping() -> Dict[str, str]:
             mapping[name] = code
     return mapping
 
+# ========================================
+# User Profile Management (Supabase)
+# ========================================
+
+def get_all_users_from_db() -> Dict[str, Dict]:
+    """Get all active users from Supabase user_profiles table."""
+    if not USE_CLOUD_DB:
+        return {}
+    
+    try:
+        conn = get_database_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT user_name, employee_code, team_function, active 
+            FROM user_profiles 
+            WHERE active = TRUE
+            ORDER BY user_name
+        """)
+        results = cursor.fetchall()
+        conn.close()
+        
+        users = {}
+        for user_name, employee_code, team_function, active in results:
+            users[user_name] = {
+                "employee_code": employee_code or "",
+                "team_function": team_function or "",
+                "active": active
+            }
+        return users
+    except Exception as e:
+        st.error(f"Failed to load users from database: {e}")
+        return {}
+
+def add_user_to_db(user_name: str, employee_code: str = "", team_function: str = "") -> bool:
+    """Add user to Supabase user_profiles table."""
+    if not USE_CLOUD_DB:
+        st.warning("⚠️ Cloud database required for user management.")
+        return False
+    
+    try:
+        conn = get_database_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO user_profiles (user_name, employee_code, team_function, active, created_at, updated_at)
+            VALUES (%s, %s, %s, TRUE, NOW(), NOW())
+            ON CONFLICT (user_name) DO UPDATE
+            SET employee_code = EXCLUDED.employee_code,
+                team_function = EXCLUDED.team_function,
+                active = TRUE,
+                updated_at = NOW()
+        """, (user_name, employee_code, team_function))
+        conn.commit()
+        conn.close()
+        st.cache_data.clear()
+        return True
+    except Exception as e:
+        st.error(f"Failed to add user: {e}")
+        return False
+
+def remove_user_from_db(user_name: str) -> bool:
+    """Soft delete user from Supabase (set active = FALSE)."""
+    if not USE_CLOUD_DB:
+        return False
+    
+    try:
+        conn = get_database_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE user_profiles 
+            SET active = FALSE, updated_at = NOW()
+            WHERE user_name = %s
+        """, (user_name,))
+        conn.commit()
+        conn.close()
+        st.cache_data.clear()
+        return True
+    except Exception as e:
+        st.error(f"Failed to remove user: {e}")
+        return False
+
+def update_user_team_function(user_name: str, team_function: str) -> bool:
+    """Update user's team function in Supabase."""
+    if not USE_CLOUD_DB:
+        return False
+    
+    try:
+        conn = get_database_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE user_profiles 
+            SET team_function = %s, updated_at = NOW()
+            WHERE user_name = %s
+        """, (team_function, user_name))
+        conn.commit()
+        conn.close()
+        st.cache_data.clear()
+        return True
+    except Exception as e:
+        st.error(f"Failed to update team function: {e}")
+        return False
+
+def sync_pm_to_supabase() -> int:
+    """Sync PM.xlsx data to Supabase user_profiles. Returns count of synced users."""
+    if not USE_CLOUD_DB:
+        return 0
+    
+    # Load from PM.xlsx
+    if os.path.exists('PM.xlsx'):
+        df = pd.read_excel('PM.xlsx')
+    elif os.path.exists('PM_team.xlsx'):
+        df = pd.read_excel('PM_team.xlsx')
+    else:
+        return 0
+    
+    name_col = _find_column(df, ["name", "user name", "user", "pm", "pm name"])
+    code_col = _find_column(df, ["employee code", "employee_code", "emp code", "emp_code", "code"])
+    team_col = _find_column(df, ["team function", "team_function", "function", "role", "department"])
+    
+    if not name_col:
+        return 0
+    
+    count = 0
+    for _, row in df.iterrows():
+        name = _normalize_value(row.get(name_col))
+        code = _normalize_value(row.get(code_col)) if code_col else ""
+        team = _normalize_value(row.get(team_col)) if team_col else ""
+        
+        if name:
+            if add_user_to_db(name, code, team):
+                count += 1
+    
+    return count
+
+def load_employee_codes_from_db() -> Dict[str, str]:
+    """Load employee codes from Supabase user_profiles."""
+    users = get_all_users_from_db()
+    return {name: info["employee_code"] for name, info in users.items() if info["employee_code"]}
+
+# ========================================
+# Password Management
+# ========================================
+
 def load_password_overrides() -> Dict:
     """Load password overrides from Supabase database."""
     if not USE_CLOUD_DB:
@@ -159,20 +301,34 @@ def verify_user_password(user_name: str, password: str) -> bool:
         try:
             conn = get_database_connection()
             cursor = conn.cursor()
+            
+            # First check custom password
             cursor.execute(
                 "SELECT salt, password_hash FROM user_passwords WHERE user_name = %s",
                 (user_name,)
             )
             result = cursor.fetchone()
-            conn.close()
             
             if result:
                 salt, password_hash = result
+                conn.close()
                 return _hash_password(password, salt) == password_hash
+            
+            # Fallback to Employee Code from user_profiles
+            cursor.execute(
+                "SELECT employee_code FROM user_profiles WHERE user_name = %s AND active = TRUE",
+                (user_name,)
+            )
+            profile_result = cursor.fetchone()
+            conn.close()
+            
+            if profile_result:
+                employee_code = profile_result[0]
+                return _normalize_value(employee_code) == _normalize_value(password)
         except Exception:
             pass
     
-    # Fallback to Employee Code
+    # Final fallback to PM.xlsx (for local development)
     mapping = load_employee_code_mapping()
     return _normalize_value(mapping.get(user_name)) == _normalize_value(password)
 
@@ -186,17 +342,28 @@ def authenticate_by_password(password: str) -> Optional[str]:
         try:
             conn = get_database_connection()
             cursor = conn.cursor()
+            
+            # Check custom passwords
             cursor.execute("SELECT user_name, salt, password_hash FROM user_passwords")
             results = cursor.fetchall()
-            conn.close()
             
             for user_name, salt, password_hash in results:
                 if _hash_password(password, salt) == password_hash:
+                    conn.close()
+                    return user_name
+            
+            # Check Employee Codes from user_profiles
+            cursor.execute("SELECT user_name, employee_code FROM user_profiles WHERE active = TRUE")
+            profile_results = cursor.fetchall()
+            conn.close()
+            
+            for user_name, employee_code in profile_results:
+                if employee_code and _normalize_value(employee_code) == _normalize_value(password):
                     return user_name
         except Exception:
             pass
     
-    # Fallback to Employee Code mapping
+    # Final fallback to PM.xlsx (for local development)
     mapping = load_employee_code_mapping()
     for user_name, code in mapping.items():
         if _normalize_value(code) == _normalize_value(password):
@@ -573,11 +740,19 @@ def main():
         # Check if admin mode checkbox is checked
         admin_mode = st.checkbox("Admin login")
         
-        # Check if employee code mapping is available
-        mapping = load_employee_code_mapping()
-        if not admin_mode and not mapping:
-            st.warning("No Employee Codes found. Please update PM.xlsx with an Employee Code column.")
-            st.stop()
+        # Get users from Supabase or PM.xlsx
+        if USE_CLOUD_DB:
+            users_dict = get_all_users_from_db()
+            if not users_dict and not admin_mode:
+                st.warning("No users found in database. Admin should sync from PM.xlsx first.")
+                st.stop()
+        else:
+            # Local development: use PM.xlsx
+            mapping = load_employee_code_mapping()
+            users_dict = {name: {"employee_code": code, "team_function": ""} for name, code in mapping.items()}
+            if not users_dict and not admin_mode:
+                st.warning("No Employee Codes found. Please update PM.xlsx with an Employee Code column.")
+                st.stop()
 
         if admin_mode:
             # Admin login - only password
@@ -595,10 +770,9 @@ def main():
                     st.error("Invalid admin password")
         else:
             # Regular user login
-            mapping = load_employee_code_mapping()
             with st.form("user_login_form"):
-                user_name = st.selectbox("Select Your Name", options=sorted(mapping.keys()))
-                password = st.text_input("Password", type="password")
+                user_name = st.selectbox("Select Your Name", options=sorted(users_dict.keys()))
+                password = st.text_input("Password / Employee Code", type="password")
                 submitted = st.form_submit_button("Sign In")
             
             if submitted:
@@ -1753,27 +1927,46 @@ def show_configuration():
     
     with tab1:
         st.subheader("User Management")
+        st.info("💡 Employee Codes are loaded from PM.xlsx and synced to Supabase. All operations sync to cloud database.")
         
-        current_users = load_users_from_file()
-        employee_codes = load_employee_code_mapping()
-        team_df = get_team_members()
-        team_map = {}
-        if not team_df.empty:
-            team_map = dict(zip(team_df['name'], team_df['team_function']))
+        # Get users from Supabase
+        users_dict = get_all_users_from_db() if USE_CLOUD_DB else {}
+        
+        # Fallback to PM.xlsx for local testing
+        if not users_dict:
+            employee_codes = load_employee_code_mapping()
+            for name, code in employee_codes.items():
+                users_dict[name] = {"employee_code": code, "team_function": ""}
         
         col1, col2 = st.columns([2, 1])
         with col1:
             st.info("Current Users:")
             user_rows = [
-                {"Name": user, "Team Function": team_map.get(user, "")}
-                for user in current_users
+                {
+                    "Name": name,
+                    "Employee Code": info.get("employee_code", ""),
+                    "Team Function": info.get("team_function", "")
+                }
+                for name, info in sorted(users_dict.items())
             ]
             st.dataframe(pd.DataFrame(user_rows), use_container_width=True, height=260)
         
         with col2:
             st.markdown("**Actions:**")
             if st.button("Refresh User List"):
+                st.cache_data.clear()
                 st.rerun()
+            
+            if st.session_state.get("is_admin", False) and USE_CLOUD_DB:
+                if st.button("🔄 Sync from PM.xlsx"):
+                    with st.spinner("Syncing..."):
+                        count = sync_pm_to_supabase()
+                    if count > 0:
+                        st.success(f"Synced {count} users from PM.xlsx")
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.warning("No users to sync or PM.xlsx not found")
         
         st.markdown("---")
         st.markdown("**Add New User (Admin Only):**")
@@ -1781,8 +1974,8 @@ def show_configuration():
         if st.session_state.get("is_admin", False):
             with st.form("add_user_form"):
                 new_user = st.text_input("User Name")
-                new_employee_code = st.text_input("Employee Code (will be default password)")
-                existing_teams = sorted({v for v in team_map.values() if v})
+                new_employee_code = st.text_input("Employee Code (default password)")
+                existing_teams = sorted({info["team_function"] for info in users_dict.values() if info.get("team_function")})
                 team_function = st.selectbox(
                     "Team Function",
                     options=[""] + existing_teams,
@@ -1790,60 +1983,66 @@ def show_configuration():
                 )
                 if team_function == "":
                     team_function = st.text_input("Or enter new Team Function")
+                
                 if st.form_submit_button("Add User"):
-                    if new_user and new_employee_code and new_user not in current_users:
-                        current_users.append(new_user)
-                        if save_users_to_file(current_users):
-                            st.cache_data.clear()
-                            # Set password to Employee Code
-                            set_user_password(new_user, new_employee_code)
-                            upsert_team_member(new_user, (team_function or "").strip())
-                            st.success(f"User '{new_user}' added successfully! Password set to Employee Code.")
-                            st.rerun()
+                    if new_user and new_employee_code:
+                        if USE_CLOUD_DB:
+                            if add_user_to_db(new_user, new_employee_code, team_function):
+                                st.success(f"User '{new_user}' added successfully!")
+                                st.rerun()
+                            else:
+                                st.error("Failed to add user to database")
                         else:
-                            st.error("Failed to save user list")
+                            st.warning("Cloud database required for user management")
                     else:
-                        st.error("User name, Employee Code are required, and user must not already exist")
+                        st.error("User name and Employee Code are required")
         else:
             st.info("Admin access required to add users")
         
         st.markdown("---")
         st.markdown("**Remove User (Admin Only):**")
         if st.session_state.get("is_admin", False):
-            if current_users:
+            if users_dict:
                 with st.form("remove_user_form"):
-                    user_to_remove = st.selectbox("Select user to remove", current_users)
+                    user_to_remove = st.selectbox("Select user to remove", sorted(users_dict.keys()))
                     if st.form_submit_button("Remove User"):
-                        current_users.remove(user_to_remove)
-                        if save_users_to_file(current_users):
-                            st.success(f"User '{user_to_remove}' removed successfully!")
-                            st.rerun()
+                        if USE_CLOUD_DB:
+                            if remove_user_from_db(user_to_remove):
+                                st.success(f"User '{user_to_remove}' removed successfully!")
+                                st.rerun()
+                            else:
+                                st.error("Failed to remove user from database")
                         else:
-                            st.error("Failed to save user list")
+                            st.warning("Cloud database required for user management")
         else:
             st.info("Admin access required to remove users")
 
         st.markdown("---")
         st.markdown("**Edit Team Function (Admin Only):**")
         if st.session_state.get("is_admin", False):
-            if current_users:
+            if users_dict:
                 with st.form("edit_team_function_form"):
-                    selected_user = st.selectbox("User", current_users, key="team_user_select")
-                    current_team = team_map.get(selected_user, "")
+                    selected_user = st.selectbox("User", sorted(users_dict.keys()), key="team_user_select")
+                    current_team = users_dict[selected_user].get("team_function", "")
                     new_team = st.text_input("Team Function", value=current_team)
                     if st.form_submit_button("Save Team Function"):
-                        upsert_team_member(selected_user, new_team.strip())
-                        st.success("Team function updated")
-                        st.rerun()
+                        if USE_CLOUD_DB:
+                            if update_user_team_function(selected_user, new_team.strip()):
+                                st.success("Team function updated")
+                                st.rerun()
+                            else:
+                                st.error("Failed to update team function")
+                        else:
+                            st.warning("Cloud database required for user management")
         else:
             st.info("Admin access required to edit team functions")
 
         st.markdown("---")
         st.markdown("**Reset User Password (Admin Only):**")
         if st.session_state.get("is_admin", False):
-            if current_users:
+            if users_dict:
                 with st.form("reset_password_form"):
-                    user_to_reset = st.selectbox("User", current_users, key="reset_user_select")
+                    user_to_reset = st.selectbox("User", sorted(users_dict.keys()), key="reset_user_select")
                     if st.form_submit_button("Reset to Employee Code"):
                         if clear_user_password(user_to_reset):
                             st.success(f"Password reset for {user_to_reset}. They can log in with their Employee Code.")

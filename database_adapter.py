@@ -206,6 +206,23 @@ class DatabaseAdapter:
                 """,
                 """
                 CREATE INDEX IF NOT EXISTS idx_user_passwords_name ON user_passwords(user_name)
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS user_profiles (
+                    id SERIAL PRIMARY KEY,
+                    user_name TEXT NOT NULL UNIQUE,
+                    employee_code TEXT,
+                    team_function TEXT,
+                    active BOOLEAN DEFAULT TRUE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """,
+                """
+                CREATE INDEX IF NOT EXISTS idx_user_profiles_name ON user_profiles(user_name)
+                """,
+                """
+                CREATE INDEX IF NOT EXISTS idx_user_profiles_active ON user_profiles(active)
                 """
             ]
         else:
@@ -284,6 +301,23 @@ class DatabaseAdapter:
                 """,
                 """
                 CREATE INDEX IF NOT EXISTS idx_user_passwords_name ON user_passwords(user_name)
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS user_profiles (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_name TEXT NOT NULL UNIQUE,
+                    employee_code TEXT,
+                    team_function TEXT,
+                    active INTEGER DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """,
+                """
+                CREATE INDEX IF NOT EXISTS idx_user_profiles_name ON user_profiles(user_name)
+                """,
+                """
+                CREATE INDEX IF NOT EXISTS idx_user_profiles_active ON user_profiles(active)
                 """
             ]
         
