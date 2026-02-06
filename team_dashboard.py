@@ -112,8 +112,12 @@ def get_all_users_from_db() -> Dict[str, Dict]:
         st.error(f"Failed to load users from database: {e}")
         return {}
 
-def add_user_to_db(user_name: str, employee_code: str = "", team_function: str = "") -> bool:
-    """Add user to Supabase user_profiles table."""
+def add_user_to_db(user_name: str, employee_code: str = "", team_function: str = "", activate: bool = True) -> bool:
+    """Add user to Supabase user_profiles table.
+    
+    Args:
+        activate: If True, set active=TRUE (for UI add). If False, only update data without changing active status (for PM sync).
+    """
     if not USE_CLOUD_DB:
         st.warning("⚠️ Cloud database required for user management.")
         return False
@@ -121,15 +125,29 @@ def add_user_to_db(user_name: str, employee_code: str = "", team_function: str =
     try:
         conn = get_database_connection()
         cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO user_profiles (user_name, employee_code, team_function, active, created_at, updated_at)
-            VALUES (%s, %s, %s, TRUE, NOW(), NOW())
-            ON CONFLICT (user_name) DO UPDATE
-            SET employee_code = EXCLUDED.employee_code,
-                team_function = EXCLUDED.team_function,
-                active = TRUE,
-                updated_at = NOW()
-        """, (user_name, employee_code, team_function))
+        
+        if activate:
+            # UI add: Always set active=TRUE
+            cursor.execute("""
+                INSERT INTO user_profiles (user_name, employee_code, team_function, active, created_at, updated_at)
+                VALUES (%s, %s, %s, TRUE, NOW(), NOW())
+                ON CONFLICT (user_name) DO UPDATE
+                SET employee_code = EXCLUDED.employee_code,
+                    team_function = EXCLUDED.team_function,
+                    active = TRUE,
+                    updated_at = NOW()
+            """, (user_name, employee_code, team_function))
+        else:
+            # PM sync: Only update data, don't change active status
+            cursor.execute("""
+                INSERT INTO user_profiles (user_name, employee_code, team_function, active, created_at, updated_at)
+                VALUES (%s, %s, %s, TRUE, NOW(), NOW())
+                ON CONFLICT (user_name) DO UPDATE
+                SET employee_code = EXCLUDED.employee_code,
+                    team_function = EXCLUDED.team_function,
+                    updated_at = NOW()
+            """, (user_name, employee_code, team_function))
+        
         conn.commit()
         conn.close()
         st.cache_data.clear()
@@ -181,7 +199,11 @@ def update_user_team_function(user_name: str, team_function: str) -> bool:
         return False
 
 def sync_pm_to_supabase() -> int:
-    """Sync PM.xlsx data to Supabase user_profiles. Returns count of synced users."""
+    """Sync PM.xlsx data to Supabase user_profiles. 
+    
+    Only updates employee_code and team_function, does NOT reactivate deleted users.
+    Returns count of synced users.
+    """
     if not USE_CLOUD_DB:
         return 0
     
@@ -207,7 +229,8 @@ def sync_pm_to_supabase() -> int:
         team = _normalize_value(row.get(team_col)) if team_col else ""
         
         if name:
-            if add_user_to_db(name, code, team):
+            # Use activate=False to NOT reactivate deleted users
+            if add_user_to_db(name, code, team, activate=False):
                 count += 1
     
     return count
@@ -744,7 +767,12 @@ def main():
         if USE_CLOUD_DB:
             users_dict = get_all_users_from_db()
             if not users_dict and not admin_mode:
-                st.warning("No users found in database. Admin should sync from PM.xlsx first.")
+                st.info("👋 Welcome! This is your first time setting up.")
+                st.warning("⚠️ No users in database yet. Please login as Admin to sync from PM.xlsx.")
+                st.markdown("**Admin Setup Steps:**")
+                st.markdown("1. ✅ Check the 'Admin login' box above")
+                st.markdown("2. 🔑 Enter admin password")
+                st.markdown("3. 🔄 Go to Configuration → User Management → Click 'Sync from PM.xlsx'")
                 st.stop()
         else:
             # Local development: use PM.xlsx
@@ -1927,7 +1955,24 @@ def show_configuration():
     
     with tab1:
         st.subheader("User Management")
-        st.info("💡 Employee Codes are loaded from PM.xlsx and synced to Supabase. All operations sync to cloud database.")
+        
+        # Architecture explanation
+        with st.expander("ℹ️ How User Management Works"):
+            st.markdown("""
+            **Data Flow:**
+            - **Supabase Database** is the single source of truth for all users
+            - **PM.xlsx** is only used for initial setup (sync once)
+            - All Add/Remove/Edit operations in this UI directly update Supabase
+            
+            **About Deletion:**
+            - Removing a user sets `active=FALSE` (soft delete) to preserve history
+            - Deleted users won't appear in login but their data remains in database
+            
+            **PM.xlsx Sync:**
+            - Use "Sync from PM.xlsx" only for initial import or to update employee codes
+            - Sync will NOT reactivate deleted users
+            - PM.xlsx file must be present in the deployment (GitHub repo)
+            """)
         
         # Get users from Supabase
         users_dict = get_all_users_from_db() if USE_CLOUD_DB else {}
@@ -1958,15 +2003,15 @@ def show_configuration():
                 st.rerun()
             
             if st.session_state.get("is_admin", False) and USE_CLOUD_DB:
-                if st.button("🔄 Sync from PM.xlsx"):
-                    with st.spinner("Syncing..."):
+                if st.button("🔄 Sync from PM.xlsx", help="Import/update users from PM.xlsx file (only updates data, doesn't reactivate deleted users)"):
+                    with st.spinner("Syncing from PM.xlsx..."):
                         count = sync_pm_to_supabase()
                     if count > 0:
-                        st.success(f"Synced {count} users from PM.xlsx")
+                        st.success(f"✅ Synced {count} users from PM.xlsx (existing users updated, deleted users remain inactive)")
                         st.cache_data.clear()
                         st.rerun()
                     else:
-                        st.warning("No users to sync or PM.xlsx not found")
+                        st.warning("⚠️ No users to sync. Make sure PM.xlsx exists in your deployment.")
         
         st.markdown("---")
         st.markdown("**Add New User (Admin Only):**")
